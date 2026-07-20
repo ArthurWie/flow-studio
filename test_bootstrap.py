@@ -309,3 +309,33 @@ def test_reset_endpoint_resets_steps(monkeypatch):
         assert called == [True]
     finally:
         srv.shutdown()
+
+
+def test_ollama_exe_prefers_path(monkeypatch):
+    monkeypatch.setattr(bs.shutil, "which", lambda n: "C:/somewhere/ollama.exe")
+    assert bs.ollama_exe() == "C:/somewhere/ollama.exe"
+
+
+def test_ollama_exe_falls_back_to_localappdata(monkeypatch, tmp_path):
+    monkeypatch.setattr(bs.shutil, "which", lambda n: None)
+    prog = tmp_path / "Programs" / "Ollama"; prog.mkdir(parents=True)
+    (prog / "ollama.exe").write_text("")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    assert bs.ollama_exe().endswith("Ollama\\ollama.exe") or bs.ollama_exe().endswith("Ollama/ollama.exe")
+
+
+def test_ollama_pull_cmd_uses_resolved_exe(monkeypatch):
+    monkeypatch.setattr(bs, "ollama_exe", lambda: "OLLAMA")
+    assert bs.ollama_pull_cmd() == ["OLLAMA", "pull", "qwen2.5:3b"]
+
+
+def test_verify_signature_true_on_valid(monkeypatch):
+    class R: stdout = "Valid\n"
+    monkeypatch.setattr(bs.subprocess, "run", lambda *a, **k: R())
+    assert bs._verify_signature("x.exe") is True
+
+
+def test_verify_signature_false_on_unsigned(monkeypatch):
+    class R: stdout = "NotSigned\n"
+    monkeypatch.setattr(bs.subprocess, "run", lambda *a, **k: R())
+    assert bs._verify_signature("x.exe") is False

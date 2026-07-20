@@ -101,6 +101,9 @@ def precheck(min_gb=4.0):
     return problems
 
 
+SETUP_PORT = 7733
+
+
 def free_port(start=7700):
     for p in range(start, start + 50):
         with socket.socket() as s:
@@ -200,8 +203,28 @@ def ollama_installed():
     return reachable(OLLAMA_URL + "/api/tags", timeout=2) or bool(shutil.which("ollama"))
 
 
+def ollama_exe():
+    found = shutil.which("ollama")
+    if found:
+        return found
+    cand = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama" / "ollama.exe"
+    return str(cand) if cand.exists() else "ollama"
+
+
 def ollama_pull_cmd():
-    return ["ollama", "pull", "qwen2.5:3b"]
+    return [ollama_exe(), "pull", "qwen2.5:3b"]
+
+
+def _verify_signature(path):
+    """True only if the file has a Valid Authenticode signature (Windows)."""
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f"(Get-AuthenticodeSignature -LiteralPath '{path}').Status"],
+            capture_output=True, text=True, timeout=30).stdout.strip()
+        return out == "Valid"
+    except Exception:
+        return False
 
 
 def run_cleanup(runner=None):
@@ -214,6 +237,10 @@ def run_cleanup(runner=None):
             dest = DATA_DIR / "OllamaSetup.exe"
             with urllib.request.urlopen(OLLAMA_INSTALLER_URL, timeout=60) as r, open(dest, "wb") as f:
                 shutil.copyfileobj(r, f)
+            if not _verify_signature(dest):
+                state["steps"]["cleanup"] = "error"
+                state["error"] = "Downloaded Ollama installer failed signature verification; not running it."
+                return
             install_code = runner([str(dest), "/SILENT"], app_env())   # third-party installer may show its own UI
             if install_code != 0:
                 state["steps"]["cleanup"] = "error"
@@ -380,8 +407,16 @@ def main():
     if should_launch():
         launch_app()
         return
-    port = free_port(7700)
-    srv = serve(port)
+    # single-instance: if setup is already running, surface it instead of starting a 2nd
+    with socket.socket() as s:
+        if s.connect_ex(("127.0.0.1", SETUP_PORT)) == 0:
+            webbrowser.open(f"http://127.0.0.1:{SETUP_PORT}/")
+            return
+    try:
+        srv = serve(SETUP_PORT)
+    except OSError:
+        srv = serve(free_port(7734))   # port held by something else -> fall back
+    port = srv.server_address[1]
     url = f"http://127.0.0.1:{port}/"
     threading.Timer(0.8, lambda: webbrowser.open(url)).start()
     print("Flow Studio setup →", url)
