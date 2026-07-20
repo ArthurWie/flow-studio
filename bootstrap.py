@@ -338,3 +338,51 @@ class BootstrapHandler(http.server.BaseHTTPRequestHandler):
 
 def serve(port):
     return http.server.HTTPServer(("127.0.0.1", port), BootstrapHandler)
+
+
+import webbrowser
+
+
+def _run_selftest():
+    """End-to-end: build a throwaway env, then run the app's own selftest.
+    Slow (real uv install + model download). Not part of the fast unit suite."""
+    import tempfile
+    global ENV_DIR, VENV_PY, VENV_PYW, MARKER
+    tmp = Path(tempfile.mkdtemp(prefix="flowstudio_selftest_"))
+    ENV_DIR = tmp / "env"
+    VENV_PY = ENV_DIR / "Scripts" / "python.exe"
+    VENV_PYW = ENV_DIR / "Scripts" / "pythonw.exe"
+    MARKER = ENV_DIR / ".setup_complete"
+    print("selftest env:", ENV_DIR)
+    run_setup()
+    if state["status"] == "error":
+        print("SETUP FAILED:", state["error"]); return 1
+    code = subprocess.call([str(VENV_PY), str(APP_ENTRY), "--selftest"],
+                           cwd=str(PROGRAM_DIR), env=app_env())
+    print("app selftest exit:", code)
+    return 0 if code == 0 else 1
+
+
+def main():
+    if "--selftest" in sys.argv:
+        sys.exit(_run_selftest())
+    if should_launch():
+        launch_app()
+        return
+    port = free_port(7700)
+    srv = serve(port)
+    url = f"http://127.0.0.1:{port}/"
+    threading.Timer(0.8, lambda: webbrowser.open(url)).start()
+    print("Flow Studio setup →", url)
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+    main()
