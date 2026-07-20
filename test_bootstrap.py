@@ -158,6 +158,7 @@ def test_run_setup_writes_marker_only_on_full_success(monkeypatch, tmp_path):
     monkeypatch.setattr(bs, "REQUIREMENTS", req)
     monkeypatch.setattr(bs, "ENV_DIR", tmp_path / "env")
     monkeypatch.setattr(bs, "MODELS_DIR", tmp_path / "models")
+    monkeypatch.setattr(bs, "precheck", lambda: [])
     bs.run_setup(runner=lambda cmd, env: 0)     # all steps succeed
     assert bs.read_marker(marker).get("models_complete") is True
 
@@ -167,6 +168,7 @@ def test_run_setup_no_marker_on_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(bs, "MARKER", marker)
     monkeypatch.setattr(bs, "ENV_DIR", tmp_path / "env")
     monkeypatch.setattr(bs, "MODELS_DIR", tmp_path / "models")
+    monkeypatch.setattr(bs, "precheck", lambda: [])
     bs.run_setup(runner=lambda cmd, env: 1)     # everything fails
     assert not marker.exists()
 
@@ -176,11 +178,26 @@ def test_run_setup_no_marker_on_partial_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(bs, "MARKER", marker)
     monkeypatch.setattr(bs, "ENV_DIR", tmp_path / "env")
     monkeypatch.setattr(bs, "MODELS_DIR", tmp_path / "models")
+    monkeypatch.setattr(bs, "precheck", lambda: [])
     def runner(cmd, env):
         return 1 if "-c" in cmd else 0     # only the models/warm step fails
     bs.run_setup(runner=runner)
     assert not marker.exists()
     assert bs.state["steps"]["models"] == "error"
+
+
+def test_run_setup_aborts_when_precheck_fails(monkeypatch, tmp_path):
+    marker = tmp_path / ".setup_complete"
+    monkeypatch.setattr(bs, "MARKER", marker)
+    monkeypatch.setattr(bs, "ENV_DIR", tmp_path / "env")
+    monkeypatch.setattr(bs, "MODELS_DIR", tmp_path / "models")
+    monkeypatch.setattr(bs, "precheck", lambda: ["Not enough free disk space."])
+    ran = []
+    bs.run_setup(runner=lambda cmd, env: ran.append(cmd) or 0)
+    assert ran == []                       # no install commands ran
+    assert not marker.exists()             # no marker written
+    assert bs.state["steps"]["engine"] == "error"
+    assert "disk" in bs.state["error"].lower()
 
 
 import bootstrap as bs
@@ -265,5 +282,30 @@ def test_launch_endpoint_calls_launch_app(monkeypatch):
         _post(port, "/launch")
         import time; time.sleep(0.2)
         assert bs.state["status"] == "launched"
+    finally:
+        srv.shutdown()
+
+
+def test_precheck_endpoint_returns_problems(monkeypatch):
+    port, srv = _spawn(monkeypatch)
+    try:
+        monkeypatch.setattr(bs, "precheck", lambda: ["x"])
+        data = json.loads(_get(port, "/precheck"))
+        assert data["problems"] == ["x"]
+    finally:
+        srv.shutdown()
+
+
+def test_reset_endpoint_resets_steps(monkeypatch):
+    port, srv = _spawn(monkeypatch)
+    try:
+        bs.state["steps"]["engine"] = "done"
+        bs.state["steps"]["models"] = "done"
+        called = []
+        monkeypatch.setattr(bs, "reset_env", lambda: called.append(True))
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/reset", method="POST")
+        resp = urllib.request.urlopen(req, timeout=3)
+        assert resp.status == 200
+        assert called == [True]
     finally:
         srv.shutdown()

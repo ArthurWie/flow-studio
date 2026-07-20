@@ -179,6 +179,12 @@ def run_step(name, cmd, env=None, runner=None):
 
 def run_setup(runner=None):
     """Engine → models. Marker is written ONLY if both succeed (resumable)."""
+    problems = precheck()
+    if problems:
+        state["status"] = "error"
+        state["error"] = " ".join(problems)
+        state["steps"]["engine"] = "error"
+        return
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     env = app_env()
     # `uv venv` folded into the engine step; idempotent, no-op if env exists.
