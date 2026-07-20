@@ -202,3 +202,68 @@ def test_launch_app_spawns_pythonw_with_hf_home(monkeypatch, tmp_path):
     assert captured["cmd"] == [str(tmp_path / "pythonw.exe"), str(tmp_path / "flow_studio.py")]
     assert captured["env"]["HF_HOME"] == str(tmp_path / "models")
     assert captured["cwd"] == str(bs.PROGRAM_DIR)
+
+
+import json
+import threading
+import urllib.request
+import bootstrap as bs
+
+
+def _spawn(monkeypatch):
+    # neuter the real work so endpoints return fast in tests
+    monkeypatch.setattr(bs, "run_setup", lambda runner=None: bs.state["steps"].update(engine="done", models="done"))
+    monkeypatch.setattr(bs, "run_cleanup", lambda runner=None: bs.state["steps"].update(cleanup="done"))
+    monkeypatch.setattr(bs, "launch_app", lambda: bs.state.__setitem__("status", "launched"))
+    monkeypatch.setattr(bs, "precheck", lambda *a, **k: [])
+    port = bs.free_port(7800)
+    srv = bs.serve(port)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return port, srv
+
+
+def _get(port, path):
+    return urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=3).read().decode()
+
+
+def _post(port, path):
+    req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", method="POST")
+    return urllib.request.urlopen(req, timeout=3).read().decode()
+
+
+def test_index_serves_page(monkeypatch):
+    port, srv = _spawn(monkeypatch)
+    try:
+        body = _get(port, "/")
+        assert "Flow Studio" in body and "Install" in body
+    finally:
+        srv.shutdown()
+
+
+def test_status_is_json(monkeypatch):
+    port, srv = _spawn(monkeypatch)
+    try:
+        data = json.loads(_get(port, "/status"))
+        assert "steps" in data and "engine" in data["steps"]
+    finally:
+        srv.shutdown()
+
+
+def test_install_runs_setup(monkeypatch):
+    port, srv = _spawn(monkeypatch)
+    try:
+        _post(port, "/install")
+        import time; time.sleep(0.3)
+        assert bs.state["steps"]["engine"] == "done"
+    finally:
+        srv.shutdown()
+
+
+def test_launch_endpoint_calls_launch_app(monkeypatch):
+    port, srv = _spawn(monkeypatch)
+    try:
+        _post(port, "/launch")
+        import time; time.sleep(0.2)
+        assert bs.state["status"] == "launched"
+    finally:
+        srv.shutdown()

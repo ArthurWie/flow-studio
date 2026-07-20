@@ -227,3 +227,114 @@ def launch_app():
 
 def should_launch():
     return env_ready()
+
+
+SETUP_HTML = r"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flow Studio — Setup</title>
+<style>
+  body{margin:0;background:#F5F1EB;color:#1F1D1A;font-family:system-ui,'Segoe UI',sans-serif;
+       display:flex;align-items:center;justify-content:center;min-height:100vh;}
+  .card{background:#fff;border:1px solid #ECE5D8;border-radius:14px;max-width:520px;width:92%;
+        padding:28px 30px;box-shadow:0 1px 3px rgba(60,50,30,.06);}
+  h1{font-size:22px;margin:0 0 6px;} p.sub{color:#8A8378;margin:0 0 18px;font-size:14px;}
+  .step{display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid #F0EADE;font-size:14.5px;}
+  .dot{width:9px;height:9px;border-radius:50%;background:#D8CFBC;flex:none;}
+  .dot.running{background:#E8912D;} .dot.done{background:#4CA366;} .dot.error{background:#C0442B;}
+  .tail{font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:#8A8378;margin:10px 0 0;
+        white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  button{font:inherit;font-size:14px;font-weight:600;border:none;border-radius:999px;cursor:pointer;
+         background:#1F1D1A;color:#fff;padding:11px 22px;margin-top:18px;}
+  button:disabled{background:#C4BBA9;cursor:default;}
+  .opt{background:#fff;color:#1F1D1A;border:1px solid #E2DACB;margin-left:8px;}
+  .err{color:#C0442B;font-size:13px;margin-top:12px;}
+  a.small{font-size:12px;color:#8A8378;margin-left:auto;}
+</style></head><body>
+<div class="card">
+  <h1>Set up Flow Studio</h1>
+  <p class="sub">One-time download (~1.7 GB). Everything is fetched automatically — you just approve.</p>
+  <div id="err" class="err"></div>
+  <div class="step"><span class="dot" id="d-engine"></span> Engine (PyTorch + libraries)</div>
+  <div class="step"><span class="dot" id="d-models"></span> Voices + speech recognition</div>
+  <div class="step"><span class="dot" id="d-cleanup"></span> Dictation cleanup (optional)
+    <a href="#" class="small" id="skipCleanup">skip</a></div>
+  <p class="tail" id="tail"></p>
+  <div>
+    <button id="go">Install</button>
+    <button id="cleanup" class="opt" style="display:none">Enable cleanup</button>
+    <button id="launch" style="display:none">Open Flow Studio</button>
+  </div>
+</div>
+<script>
+const $=i=>document.getElementById(i), post=u=>fetch(u,{method:'POST'});
+async function tick(){
+  const s=await (await fetch('/status')).json();
+  for(const k of ['engine','models','cleanup']) $('d-'+k).className='dot '+(s.steps[k]||'');
+  $('tail').textContent=s.log_tail||'';
+  $('err').textContent=s.error||'';
+  if(s.steps.engine==='done'&&s.steps.models==='done'){
+    $('go').style.display='none'; $('cleanup').style.display=''; $('launch').style.display='';
+  }
+  if(s.status==='error'){ $('go').disabled=false; $('go').textContent='Retry'; }
+}
+$('go').onclick=()=>{ $('go').disabled=true; $('go').textContent='Installing…'; post('/install'); };
+$('cleanup').onclick=()=>{ $('cleanup').disabled=true; post('/install_ollama'); };
+$('skipCleanup').onclick=e=>{ e.preventDefault(); $('cleanup').style.display='none'; };
+$('launch').onclick=()=>{ post('/launch'); $('launch').textContent='Opening…'; };
+setInterval(tick,700); tick();
+</script></body></html>"""
+
+
+import http.server
+import json
+import threading
+
+
+def reset_env():
+    if ENV_DIR.exists():
+        shutil.rmtree(ENV_DIR, ignore_errors=True)
+    for k in state["steps"]:
+        state["steps"][k] = "pending"
+    state.update(status="idle", step=None, error="", log_tail="")
+
+
+class BootstrapHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a):        # silence console spam
+        pass
+
+    def _send(self, code, body, ctype="application/json"):
+        data = body.encode("utf-8") if isinstance(body, str) else body
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        if self.path == "/":
+            self._send(200, SETUP_HTML, "text/html; charset=utf-8")
+        elif self.path == "/status":
+            self._send(200, json.dumps(state))
+        elif self.path == "/precheck":
+            self._send(200, json.dumps({"problems": precheck()}))
+        else:
+            self._send(404, "{}")
+
+    def do_POST(self):
+        if self.path == "/install":
+            threading.Thread(target=run_setup, daemon=True).start()
+            self._send(200, "{}")
+        elif self.path == "/install_ollama":
+            threading.Thread(target=run_cleanup, daemon=True).start()
+            self._send(200, "{}")
+        elif self.path == "/reset":
+            reset_env(); self._send(200, "{}")
+        elif self.path == "/launch":
+            threading.Thread(target=launch_app, daemon=True).start()
+            self._send(200, "{}")
+        else:
+            self._send(404, "{}")
+
+
+def serve(port):
+    return http.server.HTTPServer(("127.0.0.1", port), BootstrapHandler)
