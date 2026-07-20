@@ -364,6 +364,11 @@ def _run_selftest():
 
 
 def main():
+    if "--check" in sys.argv:
+        print("PROGRAM_DIR:", PROGRAM_DIR)
+        print("ENV_DIR:", ENV_DIR)
+        print("env_ready:", env_ready())
+        sys.exit(0)
     if "--selftest" in sys.argv:
         sys.exit(_run_selftest())
     if should_launch():
