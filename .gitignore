@@ -1,0 +1,14 @@
+venv/
+env/
+__pycache__/
+*.pyc
+*.log
+flow_history.json
+pronunciations.json
+outputs/
+output_*.wav
+build/
+dist/
+*.spec
+FlowStudio-build/
+.superpowers/
