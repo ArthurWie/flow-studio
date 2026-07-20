@@ -103,3 +103,67 @@ def test_free_port_skips_taken_port():
         taken = srv.getsockname()[1]
         got = bs.free_port(start=taken)
         assert got != taken
+
+
+import bootstrap as bs
+
+
+def test_engine_cmd_shape(monkeypatch, tmp_path):
+    monkeypatch.setattr(bs, "UV_EXE", tmp_path / "uv.exe")
+    monkeypatch.setattr(bs, "VENV_PY", tmp_path / "env" / "Scripts" / "python.exe")
+    monkeypatch.setattr(bs, "REQUIREMENTS", tmp_path / "requirements.txt")
+    cmd = bs.engine_cmd()
+    assert cmd[0] == str(tmp_path / "uv.exe")
+    assert cmd[1:3] == ["pip", "install"]
+    assert "--python" in cmd and "-r" in cmd
+
+
+def test_venv_cmd_shape(monkeypatch, tmp_path):
+    monkeypatch.setattr(bs, "UV_EXE", tmp_path / "uv.exe")
+    monkeypatch.setattr(bs, "ENV_DIR", tmp_path / "env")
+    assert bs.venv_cmd() == [str(tmp_path / "uv.exe"), "venv", str(tmp_path / "env")]
+
+
+def test_warm_cmd_uses_venv_python_and_small_whisper(monkeypatch, tmp_path):
+    monkeypatch.setattr(bs, "VENV_PY", tmp_path / "python.exe")
+    cmd = bs.warm_cmd()
+    assert cmd[0] == str(tmp_path / "python.exe")
+    assert cmd[1] == "-c"
+    assert "get_whisper('small')" in cmd[2]
+    assert "get_pipeline('a')" in cmd[2]
+
+
+def test_app_env_sets_hf_home(monkeypatch, tmp_path):
+    monkeypatch.setattr(bs, "MODELS_DIR", tmp_path / "models")
+    env = bs.app_env()
+    assert env["HF_HOME"] == str(tmp_path / "models")
+
+
+def test_run_step_success_updates_state():
+    bs.state["steps"]["engine"] = "pending"
+    ok = bs.run_step("engine", ["noop"], runner=lambda cmd, env: 0)
+    assert ok is True and bs.state["steps"]["engine"] == "done"
+
+
+def test_run_step_failure_records_error():
+    bs.state["steps"]["engine"] = "pending"
+    ok = bs.run_step("engine", ["noop"], runner=lambda cmd, env: 1)
+    assert ok is False and bs.state["steps"]["engine"] == "error" and bs.state["error"]
+
+
+def test_run_setup_writes_marker_only_on_full_success(monkeypatch, tmp_path):
+    marker = tmp_path / ".setup_complete"
+    req = tmp_path / "requirements.txt"; req.write_text("x")
+    monkeypatch.setattr(bs, "MARKER", marker)
+    monkeypatch.setattr(bs, "REQUIREMENTS", req)
+    monkeypatch.setattr(bs, "ENV_DIR", tmp_path / "env")
+    bs.run_setup(runner=lambda cmd, env: 0)     # all steps succeed
+    assert bs.read_marker(marker).get("models_complete") is True
+
+
+def test_run_setup_no_marker_on_failure(monkeypatch, tmp_path):
+    marker = tmp_path / ".setup_complete"
+    monkeypatch.setattr(bs, "MARKER", marker)
+    monkeypatch.setattr(bs, "ENV_DIR", tmp_path / "env")
+    bs.run_setup(runner=lambda cmd, env: 1)     # everything fails
+    assert not marker.exists()
