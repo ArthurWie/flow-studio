@@ -181,3 +181,24 @@ def test_run_setup_no_marker_on_partial_failure(monkeypatch, tmp_path):
     bs.run_setup(runner=runner)
     assert not marker.exists()
     assert bs.state["steps"]["models"] == "error"
+
+
+import bootstrap as bs
+
+
+def test_launch_app_spawns_pythonw_with_hf_home(monkeypatch, tmp_path):
+    captured = {}
+    monkeypatch.setattr(bs, "VENV_PYW", tmp_path / "pythonw.exe")
+    monkeypatch.setattr(bs, "APP_ENTRY", tmp_path / "flow_studio.py")
+    monkeypatch.setattr(bs, "MODELS_DIR", tmp_path / "models")
+
+    def fake_popen(cmd, cwd=None, env=None, **kw):
+        captured.update(cmd=cmd, cwd=cwd, env=env)
+        class P: pass
+        return P()
+    monkeypatch.setattr(bs.subprocess, "Popen", fake_popen)
+
+    bs.launch_app()
+    assert captured["cmd"] == [str(tmp_path / "pythonw.exe"), str(tmp_path / "flow_studio.py")]
+    assert captured["env"]["HF_HOME"] == str(tmp_path / "models")
+    assert captured["cwd"] == str(bs.PROGRAM_DIR)

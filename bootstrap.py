@@ -218,3 +218,12 @@ def run_cleanup(runner=None):
     except Exception as exc:
         state["steps"]["cleanup"] = "error"
         state["error"] = "Cleanup setup failed (optional): " + str(exc)
+
+
+def launch_app():
+    subprocess.Popen([str(VENV_PYW), str(APP_ENTRY)],
+                     cwd=str(PROGRAM_DIR), env=app_env())
+
+
+def should_launch():
+    return env_ready()
