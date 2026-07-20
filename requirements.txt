@@ -7,6 +7,10 @@
 # --- Text to Speech (app.py) ---
 kokoro==0.9.4          # Kokoro-82M TTS; pulls torch + misaki (G2P). Downloads ~330 MB model on first use.
 soundfile==0.14.0      # WAV read/write
+# misaki's English G2P loads the spaCy model en_core_web_sm. It is NOT a normal PyPI
+# package, so it must be pinned as a direct wheel — otherwise misaki falls back to
+# `spacy.cli.download`, which shells to pip, which a uv-created venv does not have.
+en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
 
 # --- Dictation (flow.py) ---
 faster-whisper==1.2.1  # local ASR; pulls ctranslate2. Downloads the Whisper model on first use (~244 MB for small).

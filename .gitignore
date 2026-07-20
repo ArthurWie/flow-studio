@@ -12,3 +12,6 @@ dist/
 *.spec
 FlowStudio-build/
 .superpowers/
+stage/
+uv.exe
+FlowStudioSetup.exe
