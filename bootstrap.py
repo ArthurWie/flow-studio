@@ -71,3 +71,39 @@ def env_ready():
     m = read_marker()
     return (m.get("requirements_hash") == requirements_hash()
             and m.get("models_complete") is True)
+
+
+import shutil
+import socket
+import urllib.request
+
+
+def free_disk_gb(path=None):
+    return shutil.disk_usage(str(path or PROGRAM_DIR)).free / 1e9
+
+
+def reachable(url, timeout=5):
+    try:
+        urllib.request.urlopen(url, timeout=timeout).read(1)
+        return True
+    except Exception:
+        return False
+
+
+def precheck(min_gb=4.0):
+    problems = []
+    if free_disk_gb() < min_gb:
+        problems.append(f"Not enough free disk space — about {min_gb:.0f} GB is needed.")
+    if not reachable("https://pypi.org/simple/"):
+        problems.append("Can't reach PyPI. Setup needs an internet connection this one time.")
+    if not reachable("https://huggingface.co"):
+        problems.append("Can't reach Hugging Face. Setup needs an internet connection this one time.")
+    return problems
+
+
+def free_port(start=7700):
+    for p in range(start, start + 50):
+        with socket.socket() as s:
+            if s.connect_ex(("127.0.0.1", p)) != 0:   # nothing listening → free
+                return p
+    return start

@@ -71,3 +71,35 @@ def test_env_ready_false_when_models_incomplete(tmp_path, monkeypatch):
     monkeypatch.setattr(bs, "MARKER", marker)
     bs.write_marker(False, path=marker)
     assert bs.env_ready() is False
+
+
+import socket
+import bootstrap as bs
+
+
+def test_precheck_flags_low_disk(monkeypatch):
+    monkeypatch.setattr(bs, "free_disk_gb", lambda *a, **k: 1.0)
+    monkeypatch.setattr(bs, "reachable", lambda *a, **k: True)
+    problems = bs.precheck(min_gb=4.0)
+    assert any("disk" in p.lower() for p in problems)
+
+
+def test_precheck_flags_offline(monkeypatch):
+    monkeypatch.setattr(bs, "free_disk_gb", lambda *a, **k: 50.0)
+    monkeypatch.setattr(bs, "reachable", lambda *a, **k: False)
+    problems = bs.precheck()
+    assert len(problems) >= 1
+
+
+def test_precheck_ok(monkeypatch):
+    monkeypatch.setattr(bs, "free_disk_gb", lambda *a, **k: 50.0)
+    monkeypatch.setattr(bs, "reachable", lambda *a, **k: True)
+    assert bs.precheck() == []
+
+
+def test_free_port_skips_taken_port():
+    with socket.socket() as srv:
+        srv.bind(("127.0.0.1", 0)); srv.listen(1)
+        taken = srv.getsockname()[1]
+        got = bs.free_port(start=taken)
+        assert got != taken
