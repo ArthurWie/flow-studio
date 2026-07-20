@@ -24,6 +24,7 @@ Source: "stage\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 [Icons]
 Name: "{group}\Flow Studio"; Filename: "{app}\bootstrap.exe"; IconFilename: "{app}\flow.ico"
 Name: "{userdesktop}\Flow Studio"; Filename: "{app}\bootstrap.exe"; IconFilename: "{app}\flow.ico"
+Name: "{group}\Uninstall Flow Studio"; Filename: "{uninstallexe}"
 
 [Run]
 Filename: "{app}\bootstrap.exe"; Description: "Launch Flow Studio (runs one-time setup)"; Flags: nowait postinstall skipifsilent
