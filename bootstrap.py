@@ -259,8 +259,22 @@ def run_cleanup(runner=None):
         state["error"] = "Cleanup setup failed (optional): " + str(exc)
 
 
+def _launcher_exe():
+    """A copy of pythonw.exe named 'Flow Studio.exe' (same Scripts dir, so it still
+    finds the venv) so Task Manager shows the process as 'Flow Studio', not
+    'pythonw.exe'. Copied once; falls back to pythonw on any error."""
+    named = VENV_PYW.with_name("Flow Studio.exe")
+    try:
+        if not named.exists() or named.stat().st_size != VENV_PYW.stat().st_size:
+            import shutil
+            shutil.copy2(VENV_PYW, named)
+        return named
+    except Exception:
+        return VENV_PYW
+
+
 def launch_app():
-    subprocess.Popen([str(VENV_PYW), str(APP_ENTRY)],
+    subprocess.Popen([str(_launcher_exe()), str(APP_ENTRY)],
                      cwd=str(PROGRAM_DIR), env=app_env())
 
 

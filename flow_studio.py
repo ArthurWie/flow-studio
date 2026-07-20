@@ -13,6 +13,7 @@ no terminal — double-click the desktop shortcut.
   python flow_studio.py --selftest → starts both servers, checks them, exits (no window)
 """
 
+import os
 import socket
 import sys
 import threading
@@ -21,6 +22,7 @@ import urllib.request
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
+ICON_PATH = BASE_DIR / "flow.ico"
 sys.path.insert(0, str(BASE_DIR))
 
 import app as tts   # Kokoro TTS Studio  (Flask app on :7500)
@@ -208,6 +210,71 @@ def _overlay_controller(overlay, api):
         time.sleep(0.2)
 
 
+def _set_window_icon(win):
+    """Put flow.ico on the taskbar / Task Manager entry (instead of the generic
+    pythonw icon) so the app reads as 'Flow Studio'."""
+    try:
+        import ctypes
+        u = ctypes.windll.user32
+        u.GetAncestor.restype = ctypes.c_void_p
+        u.LoadImageW.restype = ctypes.c_void_p
+        hwnd = 0
+        for _ in range(20):          # wait for WebView2 to create the native window
+            hwnd = _hwnd_of(win)
+            if hwnd:
+                break
+            time.sleep(0.15)
+        if not hwnd:
+            return
+        root = u.GetAncestor(ctypes.c_void_p(hwnd), 2) or hwnd   # GA_ROOT
+        IMAGE_ICON, LR_LOADFROMFILE, LR_DEFAULTSIZE = 1, 0x0010, 0x0040
+        WM_SETICON, ICON_SMALL, ICON_BIG = 0x0080, 0, 1
+        big = u.LoadImageW(None, str(ICON_PATH), IMAGE_ICON, 0, 0,
+                           LR_LOADFROMFILE | LR_DEFAULTSIZE)
+        small = u.LoadImageW(None, str(ICON_PATH), IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
+        u.SendMessageW(ctypes.c_void_p(root), WM_SETICON, ICON_BIG, ctypes.c_void_p(big))
+        u.SendMessageW(ctypes.c_void_p(root), WM_SETICON, ICON_SMALL, ctypes.c_void_p(small))
+    except Exception:
+        pass
+
+
+def _run_tray(win):
+    """System-tray icon (bottom-right). Left-click restores the window; 'Quit'
+    fully exits — including the background dictation hotkey."""
+    try:
+        import pystray
+        from PIL import Image
+    except Exception:
+        return
+
+    def _show(icon=None, item=None):
+        win.show()
+
+    def _quit(icon, item):
+        icon.stop()
+        os._exit(0)   # ponytail: hard exit; daemon servers + hotkey die with the process
+
+    menu = pystray.Menu(
+        pystray.MenuItem("Show Flow Studio", _show, default=True),
+        pystray.MenuItem("Quit Flow Studio", _quit),
+    )
+    pystray.Icon("flow_studio", Image.open(ICON_PATH), "Flow Studio", menu).run()
+
+
+def _startup(main_win, overlay, api):
+    """Runs once after the GUI is up: set the icon, send the close button to the
+    tray (Flow keeps dictating in the background), then run the overlay loop."""
+    _set_window_icon(main_win)
+
+    def _hide_to_tray():
+        main_win.hide()
+        return False   # cancel the close — quit only from the tray menu
+
+    main_win.events.closing += _hide_to_tray
+    threading.Thread(target=_run_tray, args=(main_win,), daemon=True).start()
+    _overlay_controller(overlay, api)
+
+
 def main():
     try:
         sys.stdout.reconfigure(encoding="utf-8")  # Windows console defaults to cp1252
@@ -240,15 +307,20 @@ def main():
         if not wait_ready():
             _fatal("Flow Studio can't start — the local servers didn't respond in time.")
     try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("FlowStudio.App")
+    except Exception:
+        pass
+    try:
         import webview
-        webview.create_window("Flow Studio", html=SHELL_HTML,
-                              width=1200, height=840, min_size=(920, 640))
+        main_win = webview.create_window("Flow Studio", html=SHELL_HTML,
+                                         width=1200, height=840, min_size=(920, 640))
         api = _OverlayApi()
         overlay = webview.create_window(
             "Flow overlay", url=f"http://127.0.0.1:{FLOW_PORT}/overlay",
             width=OVERLAY_W, height=OVERLAY_H, frameless=True, on_top=True,
             resizable=False, hidden=True, transparent=True, js_api=api)
-        webview.start(lambda: _overlay_controller(overlay, api))
+        webview.start(lambda: _startup(main_win, overlay, api))
     except Exception as exc:
         # No native window available → fall back to the default browser.
         import webbrowser
