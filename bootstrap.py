@@ -104,14 +104,6 @@ def precheck(min_gb=4.0):
 SETUP_PORT = 7733
 
 
-def free_port(start=7700):
-    for p in range(start, start + 50):
-        with socket.socket() as s:
-            if s.connect_ex(("127.0.0.1", p)) != 0:   # nothing listening → free
-                return p
-    return start
-
-
 import subprocess
 
 OLLAMA_URL = "http://127.0.0.1:11434"
@@ -282,65 +274,10 @@ def should_launch():
     return env_ready()
 
 
-SETUP_HTML = r"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Flow Studio — Setup</title>
-<style>
-  body{margin:0;background:#F5F1EB;color:#1F1D1A;font-family:system-ui,'Segoe UI',sans-serif;
-       display:flex;align-items:center;justify-content:center;min-height:100vh;}
-  .card{background:#fff;border:1px solid #ECE5D8;border-radius:14px;max-width:520px;width:92%;
-        padding:28px 30px;box-shadow:0 1px 3px rgba(60,50,30,.06);}
-  h1{font-size:22px;margin:0 0 6px;} p.sub{color:#8A8378;margin:0 0 18px;font-size:14px;}
-  .step{display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid #F0EADE;font-size:14.5px;}
-  .dot{width:9px;height:9px;border-radius:50%;background:#D8CFBC;flex:none;}
-  .dot.running{background:#E8912D;} .dot.done{background:#4CA366;} .dot.error{background:#C0442B;}
-  .tail{font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:#8A8378;margin:10px 0 0;
-        white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-  button{font:inherit;font-size:14px;font-weight:600;border:none;border-radius:999px;cursor:pointer;
-         background:#1F1D1A;color:#fff;padding:11px 22px;margin-top:18px;}
-  button:disabled{background:#C4BBA9;cursor:default;}
-  .opt{background:#fff;color:#1F1D1A;border:1px solid #E2DACB;margin-left:8px;}
-  .err{color:#C0442B;font-size:13px;margin-top:12px;}
-  a.small{font-size:12px;color:#8A8378;margin-left:auto;}
-</style></head><body>
-<div class="card">
-  <h1>Set up Flow Studio</h1>
-  <p class="sub">One-time download (~1.7 GB). Everything is fetched automatically — you just approve.</p>
-  <div id="err" class="err"></div>
-  <div class="step"><span class="dot" id="d-engine"></span> Engine (PyTorch + libraries)</div>
-  <div class="step"><span class="dot" id="d-models"></span> Voices + speech recognition</div>
-  <div class="step"><span class="dot" id="d-cleanup"></span> Dictation cleanup (optional)
-    <a href="#" class="small" id="skipCleanup">skip</a></div>
-  <p class="tail" id="tail"></p>
-  <div>
-    <button id="go">Install</button>
-    <button id="cleanup" class="opt" style="display:none">Enable cleanup</button>
-    <button id="launch" style="display:none">Open Flow Studio</button>
-  </div>
-</div>
-<script>
-const $=i=>document.getElementById(i), post=u=>fetch(u,{method:'POST'});
-async function tick(){
-  const s=await (await fetch('/status')).json();
-  for(const k of ['engine','models','cleanup']) $('d-'+k).className='dot '+(s.steps[k]||'');
-  $('tail').textContent=s.log_tail||'';
-  $('err').textContent=s.error||'';
-  if(s.steps.engine==='done'&&s.steps.models==='done'){
-    $('go').style.display='none'; $('cleanup').style.display=''; $('launch').style.display='';
-  }
-  if(s.status==='error'){ $('go').disabled=false; $('go').textContent='Retry'; }
-}
-$('go').onclick=()=>{ $('go').disabled=true; $('go').textContent='Installing…'; post('/install'); };
-$('cleanup').onclick=()=>{ $('cleanup').disabled=true; post('/install_ollama'); };
-$('skipCleanup').onclick=e=>{ e.preventDefault(); $('cleanup').style.display='none'; };
-$('launch').onclick=()=>{ post('/launch'); $('launch').textContent='Opening…'; };
-setInterval(tick,700); tick();
-</script></body></html>"""
-
-
-import http.server
 import json
 import threading
+import tkinter as tk
+from tkinter import ttk
 
 
 def reset_env():
@@ -351,72 +288,112 @@ def reset_env():
     state.update(status="idle", step=None, error="", log_tail="")
 
 
-class BootstrapHandler(http.server.BaseHTTPRequestHandler):
-    def log_message(self, *a):        # silence console spam
+_STEP_TEXT = {
+    "engine": "Engine (PyTorch + libraries)",
+    "models": "Voices + speech recognition",
+    "cleanup": "Dictation cleanup (optional)",
+}
+_STEP_MARK = {"pending": "•", "running": "⏳", "done": "✓", "error": "✕"}
+_STEP_COLOR = {"pending": "#8A8378", "running": "#E8912D", "done": "#4CA366", "error": "#C0442B"}
+
+
+def run_setup_ui():
+    """Native setup window (tkinter): shows steps + a progress bar and drives
+    run_setup / run_cleanup / launch. Worker threads only mutate the shared `state`
+    dict; the UI polls it on the main thread via root.after (tkinter is not
+    thread-safe, so no widget is touched off the main thread)."""
+    root = tk.Tk()
+    root.title("Set up Flow Studio")
+    root.configure(bg="#F5F1EB")
+    root.geometry("540x380")
+    root.resizable(False, False)
+    try:
+        root.iconbitmap(str(PROGRAM_DIR / "flow.ico"))
+    except Exception:
         pass
 
-    def _send(self, code, body, ctype="application/json"):
-        data = body.encode("utf-8") if isinstance(body, str) else body
-        self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+    wrap = tk.Frame(root, bg="#FFFFFF")
+    wrap.pack(fill="both", expand=True, padx=18, pady=18)
+    tk.Label(wrap, text="Set up Flow Studio", bg="#FFFFFF", fg="#1F1D1A",
+             font=("Segoe UI Semibold", 17)).pack(anchor="w", padx=26, pady=(24, 2))
+    tk.Label(wrap, text="One-time download (~1.7 GB). Everything is fetched automatically — you just approve.",
+             bg="#FFFFFF", fg="#8A8378", font=("Segoe UI", 9), wraplength=470,
+             justify="left").pack(anchor="w", padx=26)
 
-    def do_GET(self):
-        if self.path == "/":
-            self._send(200, SETUP_HTML, "text/html; charset=utf-8")
-        elif self.path == "/status":
-            self._send(200, json.dumps(state))
-        elif self.path == "/precheck":
-            self._send(200, json.dumps({"problems": precheck()}))
-        else:
-            self._send(404, "{}")
+    steps = {}
+    for key in ("engine", "models", "cleanup"):
+        lbl = tk.Label(wrap, text=f"{_STEP_MARK['pending']}  {_STEP_TEXT[key]}",
+                       bg="#FFFFFF", fg="#8A8378", font=("Segoe UI", 11), anchor="w")
+        lbl.pack(anchor="w", padx=26, pady=2)
+        steps[key] = lbl
 
-    def do_POST(self):
-        if self.path == "/install":
-            threading.Thread(target=run_setup, daemon=True).start()
-            self._send(200, "{}")
-        elif self.path == "/install_ollama":
-            threading.Thread(target=run_cleanup, daemon=True).start()
-            self._send(200, "{}")
-        elif self.path == "/reset":
-            reset_env(); self._send(200, "{}")
-        elif self.path == "/launch":
-            threading.Thread(target=launch_app, daemon=True).start()
-            self._send(200, "{}")
-        else:
-            self._send(404, "{}")
+    bar = ttk.Progressbar(wrap, mode="determinate", maximum=100, length=488)
+    bar.pack(padx=26, pady=(16, 4))
+    status = tk.Label(wrap, text="", bg="#FFFFFF", fg="#8A8378", font=("Consolas", 8),
+                      anchor="w", wraplength=488, justify="left")
+    status.pack(fill="x", padx=26)
+    errlbl = tk.Label(wrap, text="", bg="#FFFFFF", fg="#C0442B", font=("Segoe UI", 9),
+                      anchor="w", wraplength=488, justify="left")
+    errlbl.pack(fill="x", padx=26, pady=(4, 0))
 
+    btnrow = tk.Frame(wrap, bg="#FFFFFF")
+    btnrow.pack(anchor="w", padx=26, pady=16)
 
-def serve(port):
-    return http.server.HTTPServer(("127.0.0.1", port), BootstrapHandler)
+    def _btn(text, dark=True):
+        return tk.Button(btnrow, text=text, font=("Segoe UI Semibold", 10), relief="flat",
+                         cursor="hand2", padx=18, pady=8, bd=0,
+                         bg="#1F1D1A" if dark else "#FFFFFF",
+                         fg="#FFFFFF" if dark else "#1F1D1A",
+                         activebackground="#000000" if dark else "#F0EADE",
+                         activeforeground="#FFFFFF" if dark else "#1F1D1A")
 
+    go, cleanup, launch = _btn("Install"), _btn("Enable cleanup", dark=False), _btn("Open Flow Studio")
 
-import webbrowser
+    def start_install():
+        go.config(state="disabled", text="Installing…")
+        threading.Thread(target=run_setup, daemon=True).start()
 
-_APP_BROWSERS = [
-    r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe",
-    r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe",
-    r"%ProgramFiles%\Google\Chrome\Application\chrome.exe",
-    r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe",
-]
+    def start_cleanup():
+        cleanup.config(state="disabled", text="Setting up…")
+        threading.Thread(target=run_cleanup, daemon=True).start()
 
+    def do_launch():
+        launch.config(state="disabled", text="Opening…")
+        threading.Thread(target=launch_app, daemon=True).start()
+        root.after(1500, root.destroy)
 
-def open_setup_window(url):
-    """Open the setup UI as a chromeless app window (Edge/Chrome), not a browser tab.
-    Falls back to the default browser if neither is found."""
-    profile = DATA_DIR / "setup-ui"
-    for raw in _APP_BROWSERS:
-        exe = os.path.expandvars(raw)
-        if Path(exe).exists():
-            try:
-                profile.mkdir(parents=True, exist_ok=True)
-                subprocess.Popen([exe, f"--app={url}", f"--user-data-dir={profile}"])
-                return
-            except Exception:
-                pass
-    webbrowser.open(url)
+    go.config(command=start_install)
+    cleanup.config(command=start_cleanup)
+    launch.config(command=do_launch)
+    go.pack(side="left")
+
+    shown = {"done": False}
+
+    def poll():
+        for key, lbl in steps.items():
+            st = state["steps"].get(key, "pending")
+            lbl.config(text=f"{_STEP_MARK[st]}  {_STEP_TEXT[key]}", fg=_STEP_COLOR[st])
+        status.config(text=state.get("log_tail", ""))
+        errlbl.config(text=state.get("error", ""))
+        pct = 0
+        for k in ("engine", "models"):
+            if state["steps"][k] == "done":
+                pct += 50
+            elif state["steps"][k] == "running":
+                pct += 20
+        bar["value"] = pct
+        if state["steps"]["engine"] == "done" and state["steps"]["models"] == "done" and not shown["done"]:
+            shown["done"] = True
+            bar["value"] = 100
+            go.pack_forget()
+            cleanup.pack(side="left")
+            launch.pack(side="left", padx=(8, 0))
+        if state["status"] == "error":
+            go.config(state="normal", text="Retry")
+        root.after(300, poll)
+
+    poll()
+    root.mainloop()
 
 
 def _run_selftest():
@@ -439,6 +416,9 @@ def _run_selftest():
     return 0 if code == 0 else 1
 
 
+_lock_sock = None
+
+
 def main():
     if "--check" in sys.argv:
         print("PROGRAM_DIR:", PROGRAM_DIR)
@@ -450,23 +430,15 @@ def main():
     if should_launch():
         launch_app()
         return
-    # single-instance: if setup is already running, surface it instead of starting a 2nd
-    with socket.socket() as s:
-        if s.connect_ex(("127.0.0.1", SETUP_PORT)) == 0:
-            open_setup_window(f"http://127.0.0.1:{SETUP_PORT}/")
-            return
+    # single-instance: hold a loopback port as a lock; if it's taken, setup is
+    # already running, so exit rather than build into the same env twice.
+    global _lock_sock
+    _lock_sock = socket.socket()
     try:
-        srv = serve(SETUP_PORT)
+        _lock_sock.bind(("127.0.0.1", SETUP_PORT))
     except OSError:
-        srv = serve(free_port(7734))   # port held by something else -> fall back
-    port = srv.server_address[1]
-    url = f"http://127.0.0.1:{port}/"
-    threading.Timer(0.8, lambda: open_setup_window(url)).start()
-    print("Flow Studio setup →", url)
-    try:
-        srv.serve_forever()
-    except KeyboardInterrupt:
-        pass
+        return
+    run_setup_ui()
 
 
 if __name__ == "__main__":

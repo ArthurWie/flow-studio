@@ -97,14 +97,6 @@ def test_precheck_ok(monkeypatch):
     assert bs.precheck() == []
 
 
-def test_free_port_skips_taken_port():
-    with socket.socket() as srv:
-        srv.bind(("127.0.0.1", 0)); srv.listen(1)
-        taken = srv.getsockname()[1]
-        got = bs.free_port(start=taken)
-        assert got != taken
-
-
 import bootstrap as bs
 
 
@@ -145,25 +137,6 @@ def test_app_env_isolates_uv_python(monkeypatch, tmp_path):
     env = bs.app_env()
     assert env["UV_PYTHON_INSTALL_DIR"] == str(tmp_path / "data" / "uv-python")
     assert env["UV_PYTHON_PREFERENCE"] == "managed"
-
-
-def test_open_setup_window_falls_back_to_browser(monkeypatch):
-    monkeypatch.setattr(bs, "_APP_BROWSERS", [])          # no app browser available
-    called = {}
-    monkeypatch.setattr(bs.webbrowser, "open", lambda u: called.setdefault("url", u))
-    bs.open_setup_window("http://127.0.0.1:9/")
-    assert called["url"] == "http://127.0.0.1:9/"
-
-
-def test_open_setup_window_uses_app_mode(monkeypatch, tmp_path):
-    fake_exe = tmp_path / "msedge.exe"; fake_exe.write_text("")
-    monkeypatch.setattr(bs, "_APP_BROWSERS", [str(fake_exe)])
-    monkeypatch.setattr(bs, "DATA_DIR", tmp_path / "data")
-    captured = {}
-    monkeypatch.setattr(bs.subprocess, "Popen", lambda cmd, *a, **k: captured.setdefault("cmd", cmd))
-    bs.open_setup_window("http://127.0.0.1:9/")
-    assert captured["cmd"][0] == str(fake_exe)
-    assert "--app=http://127.0.0.1:9/" in captured["cmd"]
 
 
 def test_run_step_success_updates_state():
@@ -254,18 +227,6 @@ import urllib.request
 import bootstrap as bs
 
 
-def _spawn(monkeypatch):
-    # neuter the real work so endpoints return fast in tests
-    monkeypatch.setattr(bs, "run_setup", lambda runner=None: bs.state["steps"].update(engine="done", models="done"))
-    monkeypatch.setattr(bs, "run_cleanup", lambda runner=None: bs.state["steps"].update(cleanup="done"))
-    monkeypatch.setattr(bs, "launch_app", lambda: bs.state.__setitem__("status", "launched"))
-    monkeypatch.setattr(bs, "precheck", lambda *a, **k: [])
-    port = bs.free_port(7800)
-    srv = bs.serve(port)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    return port, srv
-
-
 def _get(port, path):
     return urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=3).read().decode()
 
@@ -273,69 +234,6 @@ def _get(port, path):
 def _post(port, path):
     req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", method="POST")
     return urllib.request.urlopen(req, timeout=3).read().decode()
-
-
-def test_index_serves_page(monkeypatch):
-    port, srv = _spawn(monkeypatch)
-    try:
-        body = _get(port, "/")
-        assert "Flow Studio" in body and "Install" in body
-    finally:
-        srv.shutdown()
-
-
-def test_status_is_json(monkeypatch):
-    port, srv = _spawn(monkeypatch)
-    try:
-        data = json.loads(_get(port, "/status"))
-        assert "steps" in data and "engine" in data["steps"]
-    finally:
-        srv.shutdown()
-
-
-def test_install_runs_setup(monkeypatch):
-    port, srv = _spawn(monkeypatch)
-    try:
-        _post(port, "/install")
-        import time; time.sleep(0.3)
-        assert bs.state["steps"]["engine"] == "done"
-    finally:
-        srv.shutdown()
-
-
-def test_launch_endpoint_calls_launch_app(monkeypatch):
-    port, srv = _spawn(monkeypatch)
-    try:
-        _post(port, "/launch")
-        import time; time.sleep(0.2)
-        assert bs.state["status"] == "launched"
-    finally:
-        srv.shutdown()
-
-
-def test_precheck_endpoint_returns_problems(monkeypatch):
-    port, srv = _spawn(monkeypatch)
-    try:
-        monkeypatch.setattr(bs, "precheck", lambda: ["x"])
-        data = json.loads(_get(port, "/precheck"))
-        assert data["problems"] == ["x"]
-    finally:
-        srv.shutdown()
-
-
-def test_reset_endpoint_resets_steps(monkeypatch):
-    port, srv = _spawn(monkeypatch)
-    try:
-        bs.state["steps"]["engine"] = "done"
-        bs.state["steps"]["models"] = "done"
-        called = []
-        monkeypatch.setattr(bs, "reset_env", lambda: called.append(True))
-        req = urllib.request.Request(f"http://127.0.0.1:{port}/reset", method="POST")
-        resp = urllib.request.urlopen(req, timeout=3)
-        assert resp.status == 200
-        assert called == [True]
-    finally:
-        srv.shutdown()
 
 
 def test_ollama_exe_prefers_path(monkeypatch):
@@ -366,3 +264,13 @@ def test_verify_signature_false_on_unsigned(monkeypatch):
     class R: stdout = "NotSigned\n"
     monkeypatch.setattr(bs.subprocess, "run", lambda *a, **k: R())
     assert bs._verify_signature("x.exe") is False
+
+
+def test_reset_env_clears_dir_and_state(monkeypatch, tmp_path):
+    envdir = tmp_path / "env"; envdir.mkdir(); (envdir / "x").write_text("y")
+    monkeypatch.setattr(bs, "ENV_DIR", envdir)
+    bs.state["steps"]["engine"] = "done"; bs.state["status"] = "done"
+    bs.reset_env()
+    assert not envdir.exists()
+    assert bs.state["steps"]["engine"] == "pending"
+    assert bs.state["status"] == "idle"
