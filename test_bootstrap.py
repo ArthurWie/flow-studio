@@ -121,7 +121,8 @@ def test_engine_cmd_shape(monkeypatch, tmp_path):
 def test_venv_cmd_shape(monkeypatch, tmp_path):
     monkeypatch.setattr(bs, "UV_EXE", tmp_path / "uv.exe")
     monkeypatch.setattr(bs, "ENV_DIR", tmp_path / "env")
-    assert bs.venv_cmd() == [str(tmp_path / "uv.exe"), "venv", str(tmp_path / "env")]
+    assert bs.venv_cmd() == [str(tmp_path / "uv.exe"), "venv",
+                             "--python", "3.12", str(tmp_path / "env")]
 
 
 def test_warm_cmd_uses_venv_python_and_small_whisper(monkeypatch, tmp_path):
@@ -137,6 +138,32 @@ def test_app_env_sets_hf_home(monkeypatch, tmp_path):
     monkeypatch.setattr(bs, "MODELS_DIR", tmp_path / "models")
     env = bs.app_env()
     assert env["HF_HOME"] == str(tmp_path / "models")
+
+
+def test_app_env_isolates_uv_python(monkeypatch, tmp_path):
+    monkeypatch.setattr(bs, "DATA_DIR", tmp_path / "data")
+    env = bs.app_env()
+    assert env["UV_PYTHON_INSTALL_DIR"] == str(tmp_path / "data" / "uv-python")
+    assert env["UV_PYTHON_PREFERENCE"] == "managed"
+
+
+def test_open_setup_window_falls_back_to_browser(monkeypatch):
+    monkeypatch.setattr(bs, "_APP_BROWSERS", [])          # no app browser available
+    called = {}
+    monkeypatch.setattr(bs.webbrowser, "open", lambda u: called.setdefault("url", u))
+    bs.open_setup_window("http://127.0.0.1:9/")
+    assert called["url"] == "http://127.0.0.1:9/"
+
+
+def test_open_setup_window_uses_app_mode(monkeypatch, tmp_path):
+    fake_exe = tmp_path / "msedge.exe"; fake_exe.write_text("")
+    monkeypatch.setattr(bs, "_APP_BROWSERS", [str(fake_exe)])
+    monkeypatch.setattr(bs, "DATA_DIR", tmp_path / "data")
+    captured = {}
+    monkeypatch.setattr(bs.subprocess, "Popen", lambda cmd, *a, **k: captured.setdefault("cmd", cmd))
+    bs.open_setup_window("http://127.0.0.1:9/")
+    assert captured["cmd"][0] == str(fake_exe)
+    assert "--app=http://127.0.0.1:9/" in captured["cmd"]
 
 
 def test_run_step_success_updates_state():

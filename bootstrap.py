@@ -127,7 +127,9 @@ state = {
 
 
 def venv_cmd():
-    return [str(UV_EXE), "venv", str(ENV_DIR)]
+    # Pin 3.12: our wheels (torch==2.13.0 etc.) target it. Without --python, uv grabs
+    # its newest managed Python (e.g. 3.14), which has no matching wheels.
+    return [str(UV_EXE), "venv", "--python", "3.12", str(ENV_DIR)]
 
 
 def engine_cmd():
@@ -146,6 +148,10 @@ def warm_cmd():
 def app_env():
     env = dict(os.environ)
     env["HF_HOME"] = str(MODELS_DIR)
+    # Keep uv's managed Python in an app-controlled dir, not %APPDATA%\uv — the latter
+    # can hold a broken/untrusted managed install that fails traversal (os error 448).
+    env["UV_PYTHON_INSTALL_DIR"] = str(DATA_DIR / "uv-python")
+    env["UV_PYTHON_PREFERENCE"] = "managed"   # deterministic 3.12, regardless of host Python
     return env
 
 
@@ -375,6 +381,29 @@ def serve(port):
 
 import webbrowser
 
+_APP_BROWSERS = [
+    r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe",
+    r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe",
+    r"%ProgramFiles%\Google\Chrome\Application\chrome.exe",
+    r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe",
+]
+
+
+def open_setup_window(url):
+    """Open the setup UI as a chromeless app window (Edge/Chrome), not a browser tab.
+    Falls back to the default browser if neither is found."""
+    profile = DATA_DIR / "setup-ui"
+    for raw in _APP_BROWSERS:
+        exe = os.path.expandvars(raw)
+        if Path(exe).exists():
+            try:
+                profile.mkdir(parents=True, exist_ok=True)
+                subprocess.Popen([exe, f"--app={url}", f"--user-data-dir={profile}"])
+                return
+            except Exception:
+                pass
+    webbrowser.open(url)
+
 
 def _run_selftest():
     """End-to-end: build a throwaway env, then run the app's own selftest.
@@ -410,7 +439,7 @@ def main():
     # single-instance: if setup is already running, surface it instead of starting a 2nd
     with socket.socket() as s:
         if s.connect_ex(("127.0.0.1", SETUP_PORT)) == 0:
-            webbrowser.open(f"http://127.0.0.1:{SETUP_PORT}/")
+            open_setup_window(f"http://127.0.0.1:{SETUP_PORT}/")
             return
     try:
         srv = serve(SETUP_PORT)
@@ -418,7 +447,7 @@ def main():
         srv = serve(free_port(7734))   # port held by something else -> fall back
     port = srv.server_address[1]
     url = f"http://127.0.0.1:{port}/"
-    threading.Timer(0.8, lambda: webbrowser.open(url)).start()
+    threading.Timer(0.8, lambda: open_setup_window(url)).start()
     print("Flow Studio setup →", url)
     try:
         srv.serve_forever()
