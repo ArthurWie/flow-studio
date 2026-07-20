@@ -42,3 +42,32 @@ def _fatal(msg):
     except Exception:
         pass
     sys.exit(1)
+
+
+import hashlib
+import json
+
+
+def requirements_hash(path=None):
+    return hashlib.sha256(Path(path or REQUIREMENTS).read_bytes()).hexdigest()
+
+
+def read_marker(path=None):
+    try:
+        return json.loads(Path(path or MARKER).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def write_marker(models_complete, req_hash=None, path=None):
+    data = {"requirements_hash": req_hash or requirements_hash(),
+            "models_complete": bool(models_complete)}
+    Path(path or MARKER).write_text(json.dumps(data), encoding="utf-8")
+
+
+def env_ready():
+    if not VENV_PY.exists():
+        return False
+    m = read_marker()
+    return (m.get("requirements_hash") == requirements_hash()
+            and m.get("models_complete") is True)
