@@ -157,6 +157,7 @@ def test_run_setup_writes_marker_only_on_full_success(monkeypatch, tmp_path):
     monkeypatch.setattr(bs, "MARKER", marker)
     monkeypatch.setattr(bs, "REQUIREMENTS", req)
     monkeypatch.setattr(bs, "ENV_DIR", tmp_path / "env")
+    monkeypatch.setattr(bs, "MODELS_DIR", tmp_path / "models")
     bs.run_setup(runner=lambda cmd, env: 0)     # all steps succeed
     assert bs.read_marker(marker).get("models_complete") is True
 
@@ -165,5 +166,18 @@ def test_run_setup_no_marker_on_failure(monkeypatch, tmp_path):
     marker = tmp_path / ".setup_complete"
     monkeypatch.setattr(bs, "MARKER", marker)
     monkeypatch.setattr(bs, "ENV_DIR", tmp_path / "env")
+    monkeypatch.setattr(bs, "MODELS_DIR", tmp_path / "models")
     bs.run_setup(runner=lambda cmd, env: 1)     # everything fails
     assert not marker.exists()
+
+
+def test_run_setup_no_marker_on_partial_failure(monkeypatch, tmp_path):
+    marker = tmp_path / ".setup_complete"
+    monkeypatch.setattr(bs, "MARKER", marker)
+    monkeypatch.setattr(bs, "ENV_DIR", tmp_path / "env")
+    monkeypatch.setattr(bs, "MODELS_DIR", tmp_path / "models")
+    def runner(cmd, env):
+        return 1 if "-c" in cmd else 0     # only the models/warm step fails
+    bs.run_setup(runner=runner)
+    assert not marker.exists()
+    assert bs.state["steps"]["models"] == "error"

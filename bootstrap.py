@@ -206,8 +206,13 @@ def run_cleanup(runner=None):
     try:
         if not ollama_installed():
             dest = DATA_DIR / "OllamaSetup.exe"
-            urllib.request.urlretrieve(OLLAMA_INSTALLER_URL, str(dest))
-            runner([str(dest), "/SILENT"], app_env())   # third-party installer may show its own UI
+            with urllib.request.urlopen(OLLAMA_INSTALLER_URL, timeout=60) as r, open(dest, "wb") as f:
+                shutil.copyfileobj(r, f)
+            install_code = runner([str(dest), "/SILENT"], app_env())   # third-party installer may show its own UI
+            if install_code != 0:
+                state["steps"]["cleanup"] = "error"
+                state["error"] = "Ollama installer failed with code %s" % install_code
+                return
         code = runner(ollama_pull_cmd(), app_env())
         state["steps"]["cleanup"] = "done" if code == 0 else "error"
     except Exception as exc:
