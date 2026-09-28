@@ -32,6 +32,11 @@ numpy==2.5.1
 # PyPI default on Windows.
 torch==2.13.0
 
+# Text extraction for the TTS tool's "Open PDF" button. Chosen over pypdf for
+# layout-aware extraction: it keeps columns and spacing readable, which matters
+# because garbled text becomes garbled speech.
+pymupdf==1.28.2
+
 # Not a Python package — required at runtime, install separately (see README):
 #   • Ollama + a pulled model (default: qwen2.5:3b)  → LLM cleanup of transcripts
 #   • Microsoft Edge WebView2 Runtime               → native desktop window (preinstalled on Win11)
