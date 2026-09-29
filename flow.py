@@ -13,7 +13,6 @@ Everything runs on your machine. Nothing leaves it.
 UI is a faithful build of the "Flow" design mockup (cream / ink / orange).
 """
 
-import ctypes
 import json
 import os
 import re
@@ -25,6 +24,8 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+
+import os_win as osi  # ponytail: the only OS adapter so far; pick os_mac/os_linux here in phases 2/4
 
 BASE_DIR = Path(__file__).resolve().parent
 # Writable data lives outside the (possibly read-only) install dir. Twin of app.py's DATA_DIR.
@@ -227,106 +228,11 @@ def cleanup(raw):
 
 
 # ── typing into the focused app ─────────────────────────────────────────────
-def active_app():
-    try:
-        u = ctypes.windll.user32
-        h = u.GetForegroundWindow()
-        n = u.GetWindowTextLengthW(h)
-        buf = ctypes.create_unicode_buffer(n + 1)
-        u.GetWindowTextW(h, buf, n + 1)
-        title = (buf.value or "").strip()
-        return (title.split(" - ")[-1][:24] or "app") if title else "app"
-    except Exception:
-        return "app"
-
-
-def _foreground_hwnd():
-    """Handle of the window that's focused right now (the field to paste into)."""
-    try:
-        return int(ctypes.windll.user32.GetForegroundWindow())
-    except Exception:
-        return 0
-
-
-_CF_UNICODETEXT = 13
-
-
-def _clip_get():
-    u, k = ctypes.windll.user32, ctypes.windll.kernel32
-    k.GlobalLock.restype = ctypes.c_void_p
-    k.GlobalLock.argtypes = [ctypes.c_void_p]
-    k.GlobalUnlock.argtypes = [ctypes.c_void_p]
-    u.GetClipboardData.restype = ctypes.c_void_p
-    if not u.OpenClipboard(0):
-        return None
-    try:
-        h = u.GetClipboardData(_CF_UNICODETEXT)
-        if not h:
-            return ""
-        p = k.GlobalLock(h)
-        if not p:
-            return ""
-        txt = ctypes.wstring_at(p)
-        k.GlobalUnlock(h)
-        return txt
-    finally:
-        u.CloseClipboard()
-
-
-def _clip_set(text):
-    u, k = ctypes.windll.user32, ctypes.windll.kernel32
-    k.GlobalAlloc.restype = ctypes.c_void_p
-    k.GlobalLock.restype = ctypes.c_void_p
-    k.GlobalLock.argtypes = [ctypes.c_void_p]
-    k.GlobalUnlock.argtypes = [ctypes.c_void_p]
-    u.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
-    u.SetClipboardData.restype = ctypes.c_void_p
-    data = text.encode("utf-16-le") + b"\x00\x00"
-    if not u.OpenClipboard(0):
-        return False
-    try:
-        u.EmptyClipboard()
-        h = k.GlobalAlloc(0x0002, len(data))  # GMEM_MOVEABLE
-        p = k.GlobalLock(h)
-        ctypes.memmove(p, data, len(data))
-        k.GlobalUnlock(h)
-        u.SetClipboardData(_CF_UNICODETEXT, h)  # system takes ownership of h
-        return True
-    finally:
-        u.CloseClipboard()
-
-
 def type_text(text):
-    """Insert text at the cursor in the field the user was in — Wispr-Flow-style,
-    via clipboard paste (reliable in any app), restoring the previous clipboard."""
-    if not text:
-        return
-    time.sleep(0.2)  # let the hotkey keys release
-    import keyboard
-    # Put focus back on the field the user started in, in case the overlay stole it.
-    hwnd = state.get("target_hwnd") or 0
-    if hwnd:
-        try:
-            u = ctypes.windll.user32
-            u.SetForegroundWindow(ctypes.c_void_p(hwnd))
-            time.sleep(0.06)
-        except Exception:
-            pass
     try:
-        prev = _clip_get()
-        if _clip_set(text):
-            keyboard.send("ctrl+v")
-            time.sleep(0.18)
-            if prev:
-                _clip_set(prev)  # put the user's clipboard back
-        else:
-            keyboard.write(text)
+        osi.paste(text, state.get("target_hwnd") or 0)
     except Exception as exc:
         _dbg(f"type_text error: {exc}")
-        try:
-            keyboard.write(text)  # last-ditch fallback
-        except Exception:
-            pass
 
 
 # ── history ─────────────────────────────────────────────────────────────────
@@ -472,12 +378,12 @@ def _finalize(raw):
 
 def do_start():
     global _worker
+    hwnd, app_name = osi.foreground()
     with _state_lock:
         if state["status"] not in ("idle", "done"):  # "done" → start a fresh dictation
             return
         state.update(status="recording", raw="", clean="", error="",
-                     detected_lang="", app=active_app(),
-                     target_hwnd=_foreground_hwnd(), started=time.time())
+                     detected_lang="", app=app_name, target_hwnd=hwnd, started=time.time())
     _stop_flag.clear()
     _cancel_flag.clear()
     _drain_queue()
@@ -506,136 +412,70 @@ def do_cancel():
         state.update(status="idle", raw="", clean="", error="")
 
 
-# ── global hotkey via Win32 RegisterHotKey ──────────────────────────────────
-# The `keyboard` low-level hook was silent on this machine (registered fine but
-# never fired). RegisterHotKey is the OS-native mechanism and is far more reliable.
-from ctypes import wintypes  # noqa: E402
-
-_MOD = {"alt": 0x0001, "ctrl": 0x0002, "control": 0x0002,
-        "shift": 0x0004, "win": 0x0008, "windows": 0x0008}
-_MOD_NOREPEAT = 0x4000
-_VK = {"space": 0x20, "enter": 0x0D, "return": 0x0D, "tab": 0x09, "esc": 0x1B,
-       "escape": 0x1B, "backspace": 0x08, "delete": 0x2E, "up": 0x26, "down": 0x28,
-       "left": 0x25, "right": 0x27, "home": 0x24, "end": 0x23, "pageup": 0x21,
-       "pagedown": 0x22, "insert": 0x2D}
-for _i in range(1, 13):
-    _VK[f"f{_i}"] = 0x6F + _i
-
-_HOTKEY_ID = 1
-_hk_new = None            # pending hotkey string for the loop to (re)register
-_hk_lock = threading.Lock()
-_hk_thread = None
+# ── global hotkey gestures (the OS adapter delivers press / release) ────────
+# Gesture state machine (Wispr-Flow style):
+#   hold ≥ HOLD_MIN then release  → push-to-talk, auto-confirm on release
+#   quick tap (single or double)  → hands-free; recording continues until the
+#                                   next hotkey press or the ✓ in the overlay
+HOLD_MIN, DOUBLE_WINDOW = 0.3, 0.4
+_gesture = {"mode": "idle", "press_start": 0.0, "tap1": 0.0}  # mode: idle | pressing | tap_wait | handsfree
 
 
-def _parse_hotkey(s):
-    """'ctrl+shift+space' → (modifier_flags, virtual_key) ; vk None if no main key."""
-    mods, vk = 0, None
-    for p in (s or "").lower().replace(" ", "").split("+"):
-        if not p:
-            continue
-        if p in _MOD:
-            mods |= _MOD[p]
-        elif p in _VK:
-            vk = _VK[p]
-        elif len(p) == 1:
-            vk = ord(p.upper())
-    return mods, vk
+def _gesture_sync(now):
+    g = _gesture
+    # recording ended by other means (✓/✕ in overlay, cancel) → reset gesture
+    if g["mode"] != "idle" and state["status"] != "recording":
+        g["mode"] = "idle"
+    elif g["mode"] == "tap_wait" and now - g["tap1"] > DOUBLE_WINDOW:
+        g["mode"] = "handsfree"                  # single tap → hands-free too
+        _dbg("single tap -> hands-free")
 
 
-def on_hotkey():
-    try:
-        if state["status"] in ("idle", "done"):
-            do_start()
-        elif state["status"] == "recording":
-            do_stop()
-    except Exception as exc:
-        _dbg(f"on_hotkey error: {exc}")
+def _on_hotkey_press():
+    now = time.time()
+    _gesture_sync(now)
+    g = _gesture
+    if g["mode"] == "idle":
+        do_start()
+        if state["status"] == "recording":
+            g["mode"], g["press_start"] = "pressing", now
+            _dbg("hotkey down -> recording")
+    elif g["mode"] == "tap_wait":
+        g["mode"] = "handsfree"                  # second quick tap
+        _dbg("double-tap -> hands-free")
+    elif g["mode"] == "handsfree":
+        do_stop(); g["mode"] = "idle"            # press again ends hands-free
+        _dbg("hands-free press -> stop")
 
 
-def _hotkey_loop():
-    u = ctypes.windll.user32
-    msg = wintypes.MSG()
-    u.PeekMessageW(ctypes.byref(msg), None, 0, 0, 0)  # force-create this thread's message queue
-    cur = [None]
-    vk_main = [None]
+def _on_hotkey_release():
+    now = time.time()
+    _gesture_sync(now)
+    g = _gesture
+    if g["mode"] == "pressing":
+        held = now - g["press_start"]
+        if held >= HOLD_MIN:
+            do_stop(); g["mode"] = "idle"        # held then released → confirm
+            _dbg(f"release after {held:.2f}s -> confirm")
+        else:
+            g["mode"], g["tap1"] = "tap_wait", now   # quick tap → wait for a 2nd
 
-    def apply(hkstr):
-        if cur[0] is not None:
-            u.UnregisterHotKey(None, _HOTKEY_ID)
-            cur[0] = None
-        mods, vk = _parse_hotkey(hkstr)
-        if vk is None:
-            state["hotkey_ok"] = False
-            _dbg(f"RegisterHotKey: '{hkstr}' has no normal key (modifier-only unsupported)")
-            return
-        ok = bool(u.RegisterHotKey(None, _HOTKEY_ID, mods | _MOD_NOREPEAT, vk))
-        state["hotkey_ok"] = ok
-        if ok:
-            cur[0], vk_main[0] = hkstr, vk
-        _dbg(f"RegisterHotKey('{hkstr}') mods={mods} vk={hex(vk)} -> {ok}")
 
-    apply(settings["hotkey"])
-
-    # Gesture state machine (Wispr-Flow style):
-    #   hold ≥ HOLD_MIN then release  → push-to-talk, auto-confirm on release
-    #   quick tap (single or double)  → hands-free; recording continues until the
-    #                                   next hotkey press or the ✓ in the overlay
-    HOLD_MIN, DOUBLE_WINDOW = 0.3, 0.4
-    mode = "idle"          # idle | pressing | tap_wait | handsfree
-    press_start = tap1 = 0.0
-
-    def key_down(vk):
-        return vk and bool(u.GetAsyncKeyState(vk) & 0x8000)
-
-    global _hk_new
-    while True:
-        with _hk_lock:
-            pending, _hk_new = _hk_new, None
-        if pending:
-            apply(pending)
-
-        while u.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):  # PM_REMOVE
-            if msg.message == 0x0312:  # WM_HOTKEY (key pressed down)
-                now = time.time()
-                if mode == "idle":
-                    do_start()
-                    if state["status"] == "recording":
-                        mode, press_start = "pressing", now
-                        _dbg("hotkey down -> recording")
-                elif mode == "tap_wait":
-                    mode = "handsfree"          # second quick tap
-                    _dbg("double-tap -> hands-free")
-                elif mode == "handsfree":
-                    do_stop(); mode = "idle"    # press again ends hands-free
-                    _dbg("hands-free press -> stop")
-            u.TranslateMessage(ctypes.byref(msg))
-            u.DispatchMessageW(ctypes.byref(msg))
-
-        now = time.time()
-        if mode == "pressing" and not key_down(vk_main[0]):
-            held = now - press_start
-            if held >= HOLD_MIN:
-                do_stop(); mode = "idle"        # held then released → confirm
-                _dbg(f"release after {held:.2f}s -> confirm")
-            else:
-                mode, tap1 = "tap_wait", now     # quick tap → wait for a 2nd
-        elif mode == "tap_wait" and now - tap1 > DOUBLE_WINDOW:
-            mode = "handsfree"                   # single tap → hands-free too
-            _dbg("single tap -> hands-free")
-        # recording ended by other means (✓/✕ in overlay, cancel) → reset gesture
-        if mode != "idle" and state["status"] != "recording":
-            mode = "idle"
-
-        time.sleep(0.015)
+def set_hotkey(spec):
+    """(Re)register the global hotkey. Raises ValueError for a modifier-only combo."""
+    ok = osi.hotkey(spec, _on_hotkey_press, _on_hotkey_release)
+    state["hotkey_ok"] = ok
+    _dbg(f"hotkey('{spec}') -> {ok}")
+    return ok
 
 
 def register_hotkey():
-    global _hk_thread
-    if _hk_thread is None or not _hk_thread.is_alive():
-        _hk_thread = threading.Thread(target=_hotkey_loop, daemon=True)
-        _hk_thread.start()
-        time.sleep(0.35)
-    return bool(state.get("hotkey_ok"))
+    try:
+        return set_hotkey(settings["hotkey"])
+    except ValueError as exc:
+        state["hotkey_ok"] = False
+        _dbg(f"hotkey: {exc}")
+        return False
 
 
 # ── web app ─────────────────────────────────────────────────────────────────
@@ -769,15 +609,12 @@ def api_hotkey():
     hk = ((request.get_json(force=True) or {}).get("hotkey") or "").strip().lower()
     if not hk:
         return jsonify(ok=True, hotkey=settings["hotkey"])
-    mods, vk = _parse_hotkey(hk)
-    if vk is None:
+    try:
+        ok = set_hotkey(hk)
+    except ValueError:
         return jsonify(ok=False, error="Pick a combination that includes a normal key (not only modifiers)."), 400
     settings["hotkey"] = hk
-    global _hk_new
-    with _hk_lock:
-        _hk_new = hk
-    time.sleep(0.25)  # let the hotkey thread apply it
-    return jsonify(ok=bool(state.get("hotkey_ok")), hotkey=settings["hotkey"])
+    return jsonify(ok=ok, hotkey=settings["hotkey"])
 
 
 OVERLAY_HTML = r"""<!DOCTYPE html><html><head><meta charset="utf-8"><style>
