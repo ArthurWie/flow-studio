@@ -469,7 +469,11 @@ def set_hotkey(spec):
     return ok
 
 
-def register_hotkey():
+def start():
+    """Init shared by `python flow.py` and flow_studio: Ollama probe, cleanup model,
+    global hotkey. Returns whether the hotkey is active."""
+    state["ollama_ok"] = ollama_up()
+    resolve_cleanup_model()
     try:
         return set_hotkey(settings["hotkey"])
     except ValueError as exc:
@@ -1244,9 +1248,7 @@ if __name__ == "__main__":
             raise SystemExit("\n  [!] Port 7600 is already in use - is Flow already running?\n"
                              "      Close the other instance and try again.\n")
 
-    state["ollama_ok"] = ollama_up()
-    resolve_cleanup_model()
-    hotkey_ok = register_hotkey()
+    hotkey_ok = start()
     url = "http://127.0.0.1:7600"
     print(f"\n  Flow → {url}")
     print(f"  Hotkey:  {settings['hotkey']} ({'active' if hotkey_ok else 'unavailable — use the mic button'})")
