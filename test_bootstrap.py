@@ -28,6 +28,12 @@ def test_read_marker_missing_returns_empty(tmp_path):
     assert bs.read_marker(tmp_path / "nope") == {}
 
 
+def test_read_marker_corrupt_json_returns_empty(tmp_path):
+    marker = tmp_path / ".setup_complete"
+    marker.write_bytes(b"not json{")
+    assert bs.read_marker(marker) == {}
+
+
 def test_requirements_hash_changes_with_content(tmp_path):
     a = tmp_path / "r.txt"; a.write_text("torch==2.13.0")
     h1 = bs.requirements_hash(a)
