@@ -1,0 +1,16 @@
+name: tests
+on:
+  pull_request:
+  push:
+    branches: [master]
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install pytest
+      # ponytail: stdlib-only tests; test_pdf_text.py needs the full ~2 GB requirements (torch, kokoro), add a cached install step when CI must cover it
+      - run: pytest test_bootstrap.py
