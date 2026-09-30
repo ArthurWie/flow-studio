@@ -103,6 +103,21 @@ def test_precheck_ok(monkeypatch):
     assert bs.precheck() == []
 
 
+def test_reachable_false_when_urlopen_raises(monkeypatch):
+    def boom(*a, **k):
+        raise OSError("offline")
+    monkeypatch.setattr(bs.urllib.request, "urlopen", boom)
+    assert bs.reachable("https://example.invalid") is False
+
+
+def test_reachable_true_when_read_works(monkeypatch):
+    class Resp:
+        def read(self, n):
+            return b"x"
+    monkeypatch.setattr(bs.urllib.request, "urlopen", lambda *a, **k: Resp())
+    assert bs.reachable("https://example.invalid") is True
+
+
 import bootstrap as bs
 
 
