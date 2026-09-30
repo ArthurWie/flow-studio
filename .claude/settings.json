@@ -21,7 +21,7 @@
     "allowUnsandboxedCommands": false,
     "filesystem": {
       "denyRead": ["/mnt/c", "/mnt/d"],
-      "allowWrite": ["~/.cache/uv"]
+      "allowWrite": ["~/.cache/uv", "~/.local/share/uv"]
     },
     "credentials": {
       "files": [
