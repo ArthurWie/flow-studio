@@ -15,6 +15,4 @@ FlowStudio-build/
 stage/
 uv.exe
 FlowStudioSetup.exe
-
-# agent-view background worker checkouts
 .claude/worktrees/

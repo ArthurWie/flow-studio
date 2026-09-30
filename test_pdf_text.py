@@ -7,10 +7,10 @@ if it ever breaks the highlight silently drifts onto the wrong word.
 
 import os
 import tempfile
+import threading
 
-# MUST come before "import app": importing it wipes CHUNK_DIR and PDF_DIR under
-# %LOCALAPPDATA%\FlowStudio, which would delete the chunks and the open PDF of a
-# running session. Point the app at a throwaway directory instead.
+# Importing app touches no files, but point it at a throwaway directory anyway so a
+# test that does write can never reach a running session's data.
 os.environ["LOCALAPPDATA"] = tempfile.mkdtemp(prefix="flowstudio_selftest_")
 
 import pymupdf
@@ -18,6 +18,9 @@ import pymupdf
 import app
 
 assert "selftest" in str(app.DATA_DIR), f"test would clobber live data at {app.DATA_DIR}"
+assert not app.DATA_DIR.exists(), "importing app must not touch the data dir"
+assert not any("queue_worker" in t.name for t in threading.enumerate()), \
+    "importing app must not start the queue reader"
 
 
 def make_pdf(lines_per_page):

@@ -53,6 +53,7 @@ def start_servers():
     flow.state["ollama_ok"] = flow.ollama_up()
     flow.resolve_cleanup_model()
     flow.register_hotkey()
+    tts.start()
     threading.Thread(target=_serve, args=(tts.app, TTS_PORT), daemon=True).start()
     threading.Thread(target=_serve, args=(flow.app, FLOW_PORT), daemon=True).start()
 

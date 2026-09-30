@@ -40,13 +40,6 @@ CHUNK_DIR = OUTPUT_DIR / "_chunks"
 PDF_DIR = DATA_DIR / "_pdfs"
 PRON_FILE = DATA_DIR / "pronunciations.json"
 
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-if CHUNK_DIR.exists():
-    shutil.rmtree(CHUNK_DIR, ignore_errors=True)
-CHUNK_DIR.mkdir(exist_ok=True)
-shutil.rmtree(PDF_DIR, ignore_errors=True)
-PDF_DIR.mkdir(parents=True, exist_ok=True)
-
 VOICES = [
     ("af_heart", "Heart — US female"),
     ("af_bella", "Bella — US female"),
@@ -89,6 +82,14 @@ def _evict_old_jobs():
         for f in CHUNK_DIR.glob(f"{jid}_*.wav"):
             f.unlink(missing_ok=True)
         jobs.pop(jid, None)
+
+
+def new_job():
+    """Register a fresh running job and return its id."""
+    job_id = uuid.uuid4().hex[:12]
+    jobs[job_id] = {"status": "running", "chunks": [], "file": None,
+                    "total": None, "error": None, "created": time.time()}
+    return job_id
 
 
 def get_pipeline(lang_code):
@@ -287,9 +288,7 @@ def api_generate():
                    if it["status"] == "running"), None)
 
     _evict_old_jobs()
-    job_id = uuid.uuid4().hex[:12]
-    jobs[job_id] = {"status": "running", "chunks": [], "file": None,
-                    "total": None, "error": None, "created": time.time()}
+    job_id = new_job()
     threading.Thread(target=run_job, args=(job_id, text, primary, secondary,
                                            balance, speed), daemon=True).start()
     return jsonify({"job": job_id, "behind": behind})
@@ -539,10 +538,7 @@ def queue_worker():
         if not item or item["status"] != "waiting":
             continue
         item["status"] = "running"
-        job_id = uuid.uuid4().hex[:12]
-        item["job"] = job_id
-        jobs[job_id] = {"status": "running", "chunks": [], "file": None,
-                        "total": None, "error": None, "created": time.time()}
+        job_id = item["job"] = new_job()
         run_job(job_id, item["text"], item["voice"], item["voice2"],
                 item["balance"], item["speed"])
         job = jobs[job_id]
@@ -554,7 +550,16 @@ def queue_worker():
         item["error"] = job.get("error")
 
 
-threading.Thread(target=queue_worker, daemon=True).start()
+def start():
+    """Clear last session's scratch files and start the queue reader. Called by
+    whoever serves the app, never on import: the tests and bootstrap's warm step
+    import this module, and must not wipe a running session's chunks and PDFs."""
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    shutil.rmtree(CHUNK_DIR, ignore_errors=True)
+    CHUNK_DIR.mkdir()
+    shutil.rmtree(PDF_DIR, ignore_errors=True)
+    PDF_DIR.mkdir()
+    threading.Thread(target=queue_worker, daemon=True).start()
 
 
 @app.route("/api/queue", methods=["GET", "POST"])
@@ -1444,6 +1449,7 @@ if __name__ == "__main__":
         if _s.connect_ex(("127.0.0.1", 7500)) == 0:
             raise SystemExit("\n  [!] Port 7500 is already in use - is Kokoro TTS Studio "
                              "already running?\n      Close the other instance and try again.\n")
+    start()
     url = "http://127.0.0.1:7500"
     print(f"\n  Kokoro TTS Studio → {url}\n  Files are saved to: {OUTPUT_DIR}\n")
     threading.Timer(1.2, lambda: webbrowser.open(url)).start()
