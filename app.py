@@ -467,6 +467,89 @@ def api_extract_pdf():
     return jsonify(doc)
 
 
+URL_TIMEOUT = 15               # seconds, per network operation
+URL_MAX_BYTES = 5 * 1024 * 1024  # an article is well under this; anything bigger is not one
+# On a JS-only or paywalled page trafilatura's fallback still scrapes a few nav words.
+# ponytail: a word count, not a real "is this an article" test; raise it if scraps get through.
+MIN_ARTICLE_WORDS = 25
+
+
+def _trafilatura():
+    try:
+        import trafilatura  # optional: only the URL path needs it, so the import stays local
+    except ImportError:
+        raise ValueError("Reading web pages needs trafilatura:  uv pip install trafilatura")
+    return trafilatura
+
+
+def article_from_html(html, url=None):
+    """(title, text) of the article on a page, boilerplate stripped. Split out from the
+    fetch so test_url_text.py can run it on a saved page with no network."""
+    raw = _trafilatura().extract(html, url=url, output_format="json", with_metadata=True,
+                              include_comments=False)
+    data = json.loads(raw) if raw else {}
+    text = (data.get("text") or "").strip()
+    if len(text.split()) < MIN_ARTICLE_WORDS:
+        raise ValueError("No article text found on that page.")
+    # trafilatura keeps one paragraph per line; blank lines are what the reader splits on.
+    text = re.sub(r"\n+", "\n\n", text)
+    return (data.get("title") or "").strip(), text
+
+
+def ingest_url(url):
+    """Fetch a web page and pull out its article, as {title, text, chars}.
+
+    Raises ValueError carrying a message that is fit to show in the status bar.
+    """
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    url = (url or "").strip()
+    parts = urllib.parse.urlparse(url)
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        raise ValueError("That is not a web address — it should start with http:// or https://")
+    _trafilatura()                        # no point fetching a page we cannot read
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlowStudio",
+        "Accept": "text/html,application/xhtml+xml"})
+    try:
+        with urllib.request.urlopen(req, timeout=URL_TIMEOUT) as resp:
+            ctype = resp.headers.get_content_type()
+            if ctype not in ("text/html", "application/xhtml+xml"):
+                raise ValueError(f"That link is not a web page ({ctype}).")
+            blob = resp.read(URL_MAX_BYTES + 1)
+            charset = resp.headers.get_content_charset()
+    except urllib.error.HTTPError as exc:
+        raise ValueError(f"The site answered {exc.code} {exc.reason}.")
+    except urllib.error.URLError as exc:
+        raise ValueError(f"Could not reach that site — are you offline? ({exc.reason})")
+    except TimeoutError:
+        raise ValueError("That site took too long to answer.")
+    except OSError as exc:
+        raise ValueError(f"Could not fetch that page: {exc}")
+    if len(blob) > URL_MAX_BYTES:
+        raise ValueError("That page is too big to be an article.")
+    # bytes go to trafilatura as-is when the server names no charset, so it can sniff <meta>
+    try:
+        html = blob.decode(charset, errors="replace") if charset else blob
+    except LookupError:                   # a charset Python has never heard of
+        html = blob
+    title, text = article_from_html(html, url)
+    if title and not text.startswith(title):
+        text = title + "\n\n" + text      # read the headline too, as a reader view shows it
+    return {"title": title or parts.netloc, "text": text, "chars": len(text)}
+
+
+@app.route("/api/extract_url", methods=["POST"])
+def api_extract_url():
+    try:
+        doc = ingest_url((request.get_json(silent=True) or {}).get("url"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(doc)
+
+
 PAGE_ZOOM = 2  # render at 2x, display at 1x, so pages stay sharp on a HiDPI screen
 
 
@@ -519,7 +602,8 @@ def drop_queue_item(qid):
             for f in CHUNK_DIR.glob(f"{item['job']}_*.wav"):
                 f.unlink(missing_ok=True)
             jobs.pop(item["job"], None)
-    (PDF_DIR / f"{item['token']}.pdf").unlink(missing_ok=True)
+    if item.get("token"):             # a web page has no file behind it
+        (PDF_DIR / f"{item['token']}.pdf").unlink(missing_ok=True)
 
 
 def prune_queue():
@@ -568,22 +652,26 @@ def api_queue():
         return jsonify({"items": [queue_view(queue_items[q]) for q in queue_order]})
 
     files = [f for f in request.files.getlist("file") if f and f.filename]
-    if not files:
-        return jsonify({"error": "No file uploaded."}), 400
+    urls = [u.strip() for u in request.form.getlist("url") if u.strip()]
+    if not files and not urls:
+        return jsonify({"error": "No file or URL given."}), 400
     voice = request.form.get("voice") or "af_heart"
     voice2 = request.form.get("voice2") or None
     balance = float(request.form.get("balance") or 0.5)
     speed = float(request.form.get("speed") or 1.0)
 
     added, errors = 0, []
-    for f in files:
+    sources = [(f.filename, lambda f=f: ingest_pdf(f)) for f in files]
+    sources += [(u, lambda u=u: {"token": None, "words": [], "pages": [], **ingest_url(u)})
+                for u in urls]
+    for label, load in sources:
         try:
-            doc = ingest_pdf(f)
+            doc = load()
         except ValueError as exc:
-            errors.append(f"{f.filename or 'file'}: {exc}")
+            errors.append(f"{label}: {exc}")
             continue
         qid = uuid.uuid4().hex[:8]
-        queue_items[qid] = {"id": qid, "name": f.filename, "status": "waiting",
+        queue_items[qid] = {"id": qid, "name": doc.get("title") or label, "status": "waiting",
                             "created": time.time(), "job": None, "file": None,
                             "total": None, "error": None, "voice": voice,
                             "voice2": voice2, "balance": balance, "speed": speed,
@@ -672,7 +760,7 @@ PAGE_HTML = r"""<!DOCTYPE html>
   }
   .chip b { font-weight: 600; }
   .chip .swatch { width: 8px; height: 8px; border-radius: 50%; background: #111827; }
-  #pdfBtn { margin-left: auto; }
+  #urlIn { margin-left: auto; width: 280px; padding: 5px 10px; font-size: 13px; }
   #editBtn { display: none; }
   textarea#text {
     flex: 1; width: 100%; border: none; resize: none; outline: none;
@@ -804,6 +892,8 @@ PAGE_HTML = r"""<!DOCTYPE html>
   <div class="editor-col">
     <div class="editor-head">
       <span class="chip"><span class="swatch"></span><b id="chipVoice">Heart</b><span id="chipExtra"></span></span>
+      <input type="text" id="urlIn" placeholder="Paste a web page URL">
+      <button class="small" id="urlBtn">Open URL</button>
       <input type="file" id="pdfFile" accept="application/pdf,.pdf" hidden>
       <button class="small" id="pdfBtn">Open PDF</button>
       <button class="small" id="editBtn">Edit text</button>
@@ -840,6 +930,10 @@ PAGE_HTML = r"""<!DOCTYPE html>
       <h2>Reading queue</h2>
       <input type="file" id="qFiles" accept="application/pdf,.pdf" multiple hidden>
       <button class="small" id="qAdd">Add PDFs…</button>
+      <div class="pron-row">
+        <input type="text" id="qUrl" placeholder="…or a web page URL">
+        <button class="small" id="qUrlAdd">Add</button>
+      </div>
       <div id="queue"></div>
     </section>
     <section>
@@ -1035,6 +1129,43 @@ $("pdfFile").onchange = async (e) => {
   }
 };
 
+// A web page goes through the same text reader as typed text: no page boxes, so the
+// spoken word is highlighted in the text itself. Until it is generated, show it plain.
+async function openUrl() {
+  const url = $("urlIn").value.trim();
+  if (!url) return;
+  $("urlBtn").disabled = true;
+  $("status").textContent = "Fetching " + url + "…";
+  try {
+    const r = await fetch("/api/extract_url", { method: "POST",
+      headers: {"Content-Type": "application/json"}, body: JSON.stringify({ url }) });
+    const data = await r.json();
+    if (data.error) { showErr(data.error); return; }
+    audio.pause(); $("play").textContent = "\u25b6"; $("play").disabled = true;
+    chunks = []; curIdx = -1; wordEls = []; lastNow = -1; curPara = null;
+    $("fileActions").style.display = "none";
+    pdfDoc = null;
+    $("text").value = data.text;
+    $("text").dispatchEvent(new Event("input"));
+    $("reader").innerHTML = "";
+    for (const para of data.text.split(/\n\s*\n/)) {
+      const p = document.createElement("p");
+      p.className = "para";
+      p.textContent = para;
+      $("reader").appendChild(p);
+    }
+    setView("reader");
+    $("status").textContent = data.title + " — " + data.chars.toLocaleString()
+      + " characters. Press Generate speech to read it aloud.";
+  } catch (err) {
+    showErr("Could not fetch that page: " + err);
+  } finally {
+    $("urlBtn").disabled = false;
+  }
+}
+$("urlBtn").onclick = openUrl;
+$("urlIn").onkeydown = (e) => { if (e.key === "Enter") openUrl(); };
+
 // ---- reading queue --------------------------------------------------------
 // PDFs are read one at a time on the server, so you can queue a stack of them and
 // come back later. Progress is by characters spoken, not chunks: chunk lengths vary
@@ -1042,33 +1173,56 @@ $("pdfFile").onchange = async (e) => {
 let queueTimer = null;
 
 $("qAdd").onclick = () => $("qFiles").click();
-$("qFiles").onchange = async (e) => {
+$("qFiles").onchange = (e) => {
   const files = [...e.target.files];
   if (!files.length) return;
   e.target.value = "";
   const fd = new FormData();
   for (const f of files) fd.append("file", f);
+  addToQueue(fd, "Adding " + files.length + " PDF" + (files.length === 1 ? "" : "s") + "…");
+};
+$("qUrlAdd").onclick = () => {
+  const url = $("qUrl").value.trim();
+  if (!url) return;
+  const fd = new FormData();
+  fd.append("url", url);
+  addToQueue(fd, "Fetching " + url + "…").then((ok) => { if (ok) $("qUrl").value = ""; });
+};
+$("qUrl").onkeydown = (e) => { if (e.key === "Enter") $("qUrlAdd").click(); };
+
+// Error text can carry what a remote site sent (an HTTP reason), so it is never markup.
+function showErr(msg, prefix) {
+  $("status").textContent = prefix || "";
+  const s = document.createElement("span");
+  s.className = "err";
+  s.textContent = msg;
+  $("status").appendChild(s);
+}
+
+async function addToQueue(fd, busy) {
   fd.append("voice", $("voice").value);
   if ($("blendOn").checked) fd.append("voice2", $("voice2").value);
   fd.append("balance", +$("balance").value / 100);
   fd.append("speed", +$("speed").value);
-  $("qAdd").disabled = true;
-  $("status").textContent = "Adding " + files.length + " PDF" + (files.length === 1 ? "" : "s") + "…";
+  $("qAdd").disabled = $("qUrlAdd").disabled = true;
+  $("status").textContent = busy;
   try {
     const d = await (await fetch("/api/queue", { method: "POST", body: fd })).json();
-    if (d.error) { $("status").innerHTML = '<span class="err">' + d.error + "</span>"; return; }
+    if (d.error) { showErr(d.error); return false; }
     renderQueue(d.items);
     const msg = d.added + " queued. They are read in the background — you can close this tab's "
       + "document and keep working.";
-    $("status").innerHTML = d.errors.length
-      ? msg + ' <span class="err">' + d.errors.join("; ") + "</span>" : msg;
+    if (d.errors.length) showErr(d.errors.join("; "), msg + " ");
+    else $("status").textContent = msg;
+    return d.added > 0;
   } catch (err) {
-    $("status").innerHTML = '<span class="err">Could not add to the queue: ' + err + "</span>";
+    showErr("Could not add to the queue: " + err);
+    return false;
   } finally {
-    $("qAdd").disabled = false;
+    $("qAdd").disabled = $("qUrlAdd").disabled = false;
     pollQueue();
   }
-};
+}
 
 function queueAction(label, fn, first) {
   const b = document.createElement("button");
@@ -1082,7 +1236,7 @@ function renderQueue(items) {
   const box = $("queue");
   box.innerHTML = "";
   if (!items.length) {
-    box.innerHTML = '<span class="hint">Nothing queued. Add PDFs and they are read one '
+    box.innerHTML = '<span class="hint">Nothing queued. Add PDFs or web pages and they are read one '
       + 'after another while you get on with something else.</span>';
     return;
   }
@@ -1113,7 +1267,8 @@ function renderQueue(items) {
     meta.appendChild(state);
 
     const size = document.createElement("span");
-    size.textContent = it.pages + (it.pages === 1 ? " page" : " pages")
+    size.textContent = (it.pages ? it.pages + (it.pages === 1 ? " page" : " pages")
+                                 : "web · " + it.chars.toLocaleString() + " chars")
       + (it.total ? " · " + fmt(it.total) : "");
     meta.appendChild(size);
 
@@ -1169,19 +1324,19 @@ async function openQueueItem(id) {
   chunks = []; curIdx = -1; totalDur = d.total; jobDone = true; wordEls = []; lastNow = -1;
   curPara = null; firstInPara = true;
   $("reader").innerHTML = "";
-  pdfDoc = d.doc;
+  pdfDoc = d.doc.pages.length ? d.doc : null;     // a web page has no pages: text reader
   pdfNorm = d.doc.text.split(/\s+/).map(normWord);
   pdfCursor = 0; lastPw = -1;
   $("text").value = d.doc.text;
   $("text").dispatchEvent(new Event("input"));
-  buildPdfView(d.doc);
+  if (pdfDoc) buildPdfView(d.doc);
   for (const c of d.chunks) { chunks.push(c); renderChunk(c); }
   $("play").disabled = false;
   $("go").disabled = false;
   $("fileActions").style.display = "flex";
   $("dlWav").href = "/outputs/" + d.file;
   $("mp3Btn").dataset.file = d.file;
-  setView("pdf");
+  setView(pdfDoc ? "pdf" : "reader");
   $("status").textContent = d.name + " — ready, " + fmt(d.total) + ". Press play, or click any word.";
 }
 

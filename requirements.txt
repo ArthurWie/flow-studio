@@ -37,6 +37,12 @@ torch==2.13.0
 # because garbled text becomes garbled speech.
 pymupdf==1.28.2
 
+# Article extraction for the TTS tool's "Open URL" box (reader mode). Chosen over
+# readability-lxml for cleaner output: it drops nav, ads, cookie banners and comments,
+# and gives the headline. Optional — the app runs without it, and it only touches the
+# network when you paste a URL.
+trafilatura==2.2.0
+
 # Not a Python package — required at runtime, install separately (see README):
 #   • Ollama + a pulled model (default: qwen2.5:3b)  → LLM cleanup of transcripts
 #   • Microsoft Edge WebView2 Runtime               → native desktop window (preinstalled on Win11)
