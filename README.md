@@ -116,7 +116,7 @@ The app registers a **global hotkey and pastes via the clipboard** — behavior 
 
 ### Deployment gotchas
 
-- **User-data paths.** History, the debug log, pronunciations, and TTS output write to `%LOCALAPPDATA%\FlowStudio` (`DATA_DIR` in both `app.py` and `flow.py`), not next to the code — safe under a read-only install dir. Bundled read-only resources (HTML, the `output_0.wav` test sample) still load from the install dir via `BASE_DIR`.
+- **User-data paths.** History, the debug log, pronunciations, and TTS output write to `%LOCALAPPDATA%\FlowStudio` (`DATA_DIR` in both `app.py` and `flow.py`), not next to the code — safe under a read-only install dir. Bundled read-only resources (the HTML) still load from the install dir via `BASE_DIR`.
 - **Ports 7500/7600 are still fixed**, but a collision is now handled: each entry point probes the port before binding and reports it cleanly — a console message for `app.py`/`flow.py`, a Windows dialog for `flow_studio.py` (which runs under `pythonw`, no console). Werkzeug swallows bind errors and `sys.exit`s inside its own thread, so the pre-bind probe is the reliable place to catch this. Auto-selecting a free port is a possible future improvement.
 - **Ollama is separate.** It can't be bundled sanely — it's its own installer and background service. The lightweight installer's setup screen can install it for you (the optional "dictation cleanup" step); the offline bundle has no such step, so point users at ollama.com instead.
 

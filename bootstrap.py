@@ -274,7 +274,6 @@ def should_launch():
     return env_ready()
 
 
-import json
 import threading
 import tkinter as tk
 from tkinter import ttk

@@ -133,21 +133,6 @@ def transcribe_seg(model, audio, lang):
     return text, getattr(info, "language", None)
 
 
-def transcribe(audio):
-    """audio: float32 16 kHz numpy array, OR a path to an audio file."""
-    if isinstance(audio, np.ndarray) and audio.size == 0:
-        return ""
-    size = WHISPER_SIZES.get(settings["whisper_row"], "small")
-    model = get_whisper(size)
-    lang = settings.get("language") or None  # None → Whisper auto-detects the language
-    segments, info = model.transcribe(audio, language=lang, beam_size=5)
-    try:
-        state["detected_lang"] = getattr(info, "language", "") or ""
-    except Exception:
-        pass
-    return " ".join(s.text.strip() for s in segments).strip()
-
-
 # ── cleanup (local Ollama LLM) ──────────────────────────────────────────────
 # A prompt in the transcript's own language keeps a weaker model from drifting or
 # translating. Both are strict: remove fillers + fix punctuation, change nothing else.
@@ -199,7 +184,7 @@ def resolve_cleanup_model():
             p = 99  # reasoning models are poor at "return only the cleaned text"
         return (p, size)
     settings["cleanup_model"] = sorted(models, key=rank)[0][0]
-    print(f"  [i] llama3.2:3b not installed - using '{settings['cleanup_model']}' for cleanup.")
+    print(f"  [i] qwen2.5:3b not installed - using '{settings['cleanup_model']}' for cleanup.")
     print("      For best results: ollama pull qwen2.5:3b")
 
 
@@ -766,7 +751,7 @@ PAGE_HTML = r"""<!DOCTYPE html>
                 <span id="modelName">faster-whisper-small</span>
                 <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="#8A8378" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m2.5 4 2.5 2.5L7.5 4"></path></svg>
               </button>
-              <div class="mono" id="engineLine" style="font-size:11.5px; color:#8A8378; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0;">local · en-US · cleanup: llama3.2:3b</div>
+              <div class="mono" id="engineLine" style="font-size:11.5px; color:#8A8378; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0;">local · en-US · cleanup: qwen2.5:3b</div>
             </div>
 
             <!-- idle -->
@@ -1187,20 +1172,23 @@ def selftest():
         print(f"  [FAIL] import: {e}")
         return False
 
-    # 2. transcribe a known wav (the Kokoro TTS sample already in this folder)
-    sample = BASE_DIR / "output_0.wav"
-    if sample.exists():
+    # 2. transcribe a sentence spoken by Kokoro (the TTS tool is bundled alongside)
+    try:
+        import tempfile
+        import soundfile as sf
+        import app as tts
+        spoken = [r.audio for r in tts.get_pipeline("a")(
+            "Hello! This is Kokoro running locally on my PC.", voice="af_heart")]
+        sample = Path(tempfile.mkdtemp()) / "sample.wav"
+        sf.write(sample, np.concatenate([np.asarray(a, dtype=np.float32) for a in spoken]),
+                 tts.SAMPLE_RATE)  # a path, so faster-whisper resamples 24 → 16 kHz itself
         t0 = time.time()
-        try:
-            text = transcribe(str(sample))
-            print(f"  [ok] transcribe output_0.wav ({time.time()-t0:.1f}s): {text!r}")
-            assert text.strip(), "empty transcript"
-            assert "kokoro" in text.lower(), "expected 'Kokoro' in the sample transcript"
-        except Exception as e:
-            print(f"  [FAIL] transcribe: {e}")
-            ok = False
-    else:
-        print("  [skip] output_0.wav not present — cannot verify ASR")
+        text, _ = transcribe_seg(get_whisper(WHISPER_SIZES[settings["whisper_row"]]), str(sample), None)
+        print(f"  [ok] transcribe Kokoro sample ({time.time()-t0:.1f}s): {text!r}")
+        assert "kokoro" in text.lower(), "expected 'Kokoro' in the sample transcript"
+    except Exception as e:
+        print(f"  [FAIL] transcribe: {e}")
+        ok = False
 
     # 3. cleanup via Ollama (if reachable)
     raw = "um so i i think we should uh move the launch to thursday you know because the build still needs qa"
