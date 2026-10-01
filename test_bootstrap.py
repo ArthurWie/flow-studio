@@ -118,6 +118,13 @@ def test_reachable_true_when_read_works(monkeypatch):
     assert bs.reachable("https://example.invalid") is True
 
 
+def test_free_disk_gb_converts_bytes_to_gb(monkeypatch):
+    class Usage:
+        free = 5_000_000_000
+    monkeypatch.setattr(bs.shutil, "disk_usage", lambda *a, **k: Usage())
+    assert bs.free_disk_gb() == 5.0
+
+
 import bootstrap as bs
 
 
