@@ -9,3 +9,17 @@ Run before every PR: `uvx pytest -q test_bootstrap.py` (29+ stdlib-only tests, r
 `test_pdf_text.py` needs the full Windows requirements, so run it only on Windows.
 
 Worker sandbox, deny rules and generic worker rules live in `~/projects/herdr-setup` and are passed in by `dispatch`.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub issues. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default vocabulary (`ready-for-agent` = a worker may take it). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context. See `docs/agents/domain.md`.
