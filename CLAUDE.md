@@ -1,14 +1,12 @@
 # Flow Studio
 
 Windows desktop app (Python 3.12): TTS (`app.py`), dictation (`flow.py`), shell (`flow_studio.py`), installer bootstrap (`bootstrap.py`).
-The full app only runs on Windows. From WSL, run the stdlib-only tests: `uvx pytest -q test_bootstrap.py`.
+The full app only runs on Windows.
 
 ## Tests
 
-Run before every PR: `uvx pytest -q test_bootstrap.py` (29+ stdlib-only tests, runs in WSL).
+One command: `.agent/test` (stdlib tests plus the URL-reader tests; runs in WSL and in CI on Windows).
 `test_pdf_text.py` needs the full Windows requirements, so run it only on Windows.
-
-Worker sandbox, deny rules and generic worker rules live in `~/projects/herdr-setup` and are passed in by `dispatch`.
 
 ## Agent skills
 
