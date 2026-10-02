@@ -1,7 +1,7 @@
 name: release-linux
 # Frozen Linux build → install script → window check → selftest with the network blocked,
 # then a bare ubuntu:24.04 container: the install script must name the missing libraries,
-# the apt command it prints must install them, and the app must then pass its selftest.
+# the apt command it prints must install them, the app must then pass its selftest, and --uninstall must clean up.
 # A `v*` tag publishes the tarball to the GitHub Release (release.yml adds the Windows / Mac assets).
 # Its own workflow so Linux-only changes don't start the Windows build.
 on:
@@ -78,6 +78,15 @@ jobs:
             /tmp/flow-studio/install-linux.sh | tee /tmp/2.log
             if grep -q "Missing system" /tmp/2.log; then echo "the printed apt command left libraries missing"; exit 1; fi
             ~/.local/bin/flow-studio --selftest
+            # Uninstall from the installed copy: app, command and launcher go, the data folder stays.
+            d=~/.local/share/flow-studio
+            "$d/app/install-linux.sh" --uninstall
+            for f in "$d/app" ~/.local/bin/flow-studio ~/.local/share/applications/flow-studio.desktop; do
+              if [ -e "$f" ] || [ -L "$f" ]; then echo "--uninstall left $f"; exit 1; fi
+            done
+            [ -d "$d" ] || { echo "--uninstall removed the data folder"; exit 1; }
+            /tmp/flow-studio/install-linux.sh --uninstall | grep -q "isn.t installed" ||
+              { echo "a second --uninstall should say nothing is installed"; exit 1; }
           '
       - name: Record sizes
         run: |
