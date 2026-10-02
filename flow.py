@@ -29,6 +29,7 @@ from pathlib import Path
 import numpy as np
 
 from paths import data_dir
+import gpu_pack
 import model_manager as mm
 if sys.platform == "darwin":
     import os_mac as osi
@@ -70,6 +71,7 @@ settings = {
     "language": None,                       # None = auto-detect; or "en", "de", …
     "mic_index": None,                      # None = system default input device
     "overlay_style": "equalizer",           # equalizer | line | dots | orb
+    "force_cpu": False,                     # don't start the GPU pack even when it's installed
 }
 
 
@@ -167,7 +169,13 @@ def get_whisper(size):
     global _wmodel, _wsize
     if _wmodel is None or size != _wsize:
         from faster_whisper import WhisperModel
-        _wmodel = WhisperModel(whisper_path(size), device="cpu", compute_type="int8")
+        path, _wmodel = whisper_path(size), None
+        if os.environ.get("FLOW_GPU"):   # the GPU pack's build; elsewhere CUDA libs are missing
+            try:
+                _wmodel = WhisperModel(path, device="cuda", compute_type="float16")
+            except Exception as e:
+                print(f"  [!] Whisper on CUDA failed ({e}); using the CPU")
+        _wmodel = _wmodel or WhisperModel(path, device="cpu", compute_type="int8")
         _wsize = size
     return _wmodel
 
@@ -751,6 +759,28 @@ def api_models_delete():
     return jsonify(ok=True, whisper_row=settings["whisper_row"])
 
 
+# ── GPU pack (gpu_pack.py does the work) ────────────────────────────────────
+@app.route("/api/gpu")
+def api_gpu():
+    """Offered on NVIDIA machines in a released build (from source there's no matching pack)."""
+    return jsonify(available=gpu_pack.has_nvidia() and gpu_pack.app_version() != "dev",
+                   force_cpu=settings["force_cpu"], **gpu_pack.status())
+
+
+@app.route("/api/gpu/install", methods=["POST"])
+def api_gpu_install():
+    if not gpu_pack.download():
+        return jsonify(ok=False, error="the GPU pack is already downloading"), 409
+    return jsonify(ok=True)
+
+
+@app.route("/api/gpu/force_cpu", methods=["POST"])
+def api_gpu_force_cpu():
+    settings["force_cpu"] = bool((request.get_json(force=True) or {}).get("value"))
+    save_settings()
+    return jsonify(ok=True, force_cpu=settings["force_cpu"])
+
+
 @app.route("/api/language", methods=["POST"])
 def api_language():
     data = request.get_json(silent=True) or {}
@@ -1201,15 +1231,15 @@ async function modelAction(act, key){
   loadModels();
 }
 
+// Bytes done / total and speed for a running download.
+const progress = j => `<div style="height:5px;background:#F1EBDF;border-radius:3px;margin-top:9px;overflow:hidden;"><div style="height:100%;width:${j.total ? Math.min(100, 100*j.done/j.total) : 0}%;background:#1F1D1A;"></div></div>
+      <div class="mono" style="font-size:11px;color:#8A8378;margin-top:5px;">${fmtB(j.done)} / ${j.total?fmtB(j.total):'…'} · ${fmtB(j.speed)}/s</div>`;
+
 // One row's status: progress while downloading, the error with Retry, else its status + Download/Delete.
 function modelStatus(r){
   const j = mstate.job && mstate.job.key===r.key ? mstate.job : null;
   const busy = mstate.job && mstate.job.state==='downloading';
-  if (j && j.state==='downloading'){
-    const pct = j.total ? Math.min(100, 100*j.done/j.total) : 0;
-    return {t:'downloading', extra:`<div style="height:5px;background:#F1EBDF;border-radius:3px;margin-top:9px;overflow:hidden;"><div style="height:100%;width:${pct}%;background:#1F1D1A;"></div></div>
-      <div class="mono" style="font-size:11px;color:#8A8378;margin-top:5px;">${fmtB(j.done)} / ${j.total?fmtB(j.total):'…'} · ${fmtB(j.speed)}/s</div>`};
-  }
+  if (j && j.state==='downloading') return {t:'downloading', extra:progress(j)};
   if (j && j.state==='error' && r.status==='not downloaded')
     return {t:'failed', extra:`<div style="font-size:12px;color:#B3261E;margin-top:7px;">Download failed: ${esc(j.error)}. The current model stays in use.</div>`, btn: busy?'':mbtn('download',r.key,'Retry')};
   return {t:r.status, btn: r.status==='not downloaded' ? (busy?'':mbtn('download',r.key,'Download')) : r.deletable ? mbtn('delete',r.key,'Delete') : ''};
@@ -1284,14 +1314,41 @@ async function renderModelsTab(body){
      <select class="sel" id="cleanupSel" style="max-width:none;width:100%;"></select>
      <div style="font-size:13px;font-weight:700;margin:22px 0 3px;">Text to speech voices</div>
      <div style="font-size:12.5px;color:#8A8378;margin-bottom:6px;">Kokoro-82M · ships with the app</div>
-     <div id="voiceList"></div>`;
-  renderModels(); loadModels();
+     <div id="voiceList"></div>
+     <div id="gpuBox"></div>`;
+  renderModels(); loadModels(); loadGpu();
   let om = {models:[],current:''};
   try { om = await (await fetch('/api/ollama_models')).json(); } catch(e){}
   const sel = $("cleanupSel");
   sel.innerHTML = (om.models&&om.models.length) ? om.models.map(m=>`<option value="${m}">${m}</option>`).join('') : `<option value="">${om.current||'Ollama offline'}</option>`;
   if(om.current) sel.value = om.current;
   sel.onchange = async e => { if(e.target.value){ await post('/api/cleanup_model',{model:e.target.value}); tick(); } };
+}
+
+// GPU pack: offered on NVIDIA machines only; the app keeps running on the CPU whatever happens here.
+let gpoll = null;
+async function loadGpu(){
+  clearTimeout(gpoll);
+  const box = $("gpuBox"); if(!box) return;
+  let g; try { g = await (await fetch('/api/gpu')).json(); } catch(e){ return; }
+  if (!g.available){ box.innerHTML=''; return; }
+  const j = g.job, busy = j && (j.state==='downloading' || j.state==='installing');
+  const btn = label => `<button class="btnchg" id="gpuGo">${label}</button>`;
+  let line, act = '';
+  if (busy) line = j.state==='installing' ? 'Verified. Installing…' : 'Downloading the GPU pack…' + progress(j);
+  else if (j && j.state==='error'){ line = `<span style="color:#B3261E;">Download failed: ${esc(j.error)}.</span> Flow Studio keeps running on the CPU.`; act = btn('Retry'); }
+  else if (g.active) line = 'On: TTS and dictation run on your NVIDIA GPU.';
+  else if (g.state==='failed'){ line = `<span style="color:#B3261E;">The GPU pack didn't start: ${esc(g.failed)}.</span> Flow Studio runs on the CPU.`; act = btn('Retry'); }
+  else if (g.state==='ready') line = g.force_cpu ? 'Installed, but off while "Always use the CPU" is on.' : 'Installed. Restart Flow Studio to use the GPU.';
+  else if (g.state==='outdated'){ line = 'The GPU pack needs an update for this version of Flow Studio.'; act = btn('Update'); }
+  else { line = 'Run TTS and dictation on your NVIDIA GPU. A one-time download of about 3 GB.'; act = btn('Download'); }
+  box.innerHTML = `<div style="font-size:13px;font-weight:700;margin:22px 0 3px;">GPU acceleration</div>
+     <div style="font-size:12.5px;color:#8A8378;margin-bottom:10px;">NVIDIA CUDA · optional download</div>
+     ${card(`<div style="padding:14px 0;font-size:13px;line-height:1.45;display:flex;gap:12px;align-items:flex-start;"><div style="flex:1;">${line}</div>${act}</div>` +
+       srow('Always use the CPU', 'Takes effect when Flow Studio restarts', toggle('gpuCpu', g.force_cpu)))}`;
+  if ($("gpuGo")) $("gpuGo").onclick = async () => { const r = await (await post('/api/gpu/install')).json(); if (!r.ok) alert(r.error||'Failed'); loadGpu(); };
+  box.querySelector('[data-tg]').onclick = async () => { await post('/api/gpu/force_cpu', {value: !g.force_cpu}); loadGpu(); };
+  if (busy) gpoll = setTimeout(loadGpu, 500);
 }
 
 const SYS=[['sys_login','Launch app at login',true],['sys_bar','Show Flow Bar at all times',false],['sys_dock','Show app in tray',true]];

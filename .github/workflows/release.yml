@@ -1,5 +1,6 @@
 name: release
 # Frozen builds → selftest with the network blocked → Inno installer (Windows) / .dmg (macOS).
+# Windows also builds the GPU pack (CUDA build, gpu_pack.py) and selftests it from its install folders.
 # A `v*` tag publishes both to GitHub Releases; PRs touching the build files only check Windows.
 # macOS runs only on tags and workflow_dispatch: its minutes count 10x on a private repo.
 # Other changes (e.g. flow_studio.py) build on demand: gh workflow run release --ref <branch>
@@ -12,6 +13,8 @@ on:
       - FlowStudio.spec
       - FlowStudio.iss
       - package.ps1
+      - package_gpu.py
+      - gpu_pack.py
       - requirements-win.lock
       - .github/workflows/release.yml
 permissions:
@@ -19,7 +22,7 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 150
     defaults:
       run:
         shell: pwsh
@@ -56,14 +59,65 @@ jobs:
             Select-Object -First 25 @{n="MB"; e={[int]($_.Length / 1MB)}}, FullName | Format-Table -AutoSize | Out-String -Width 300
           # GitHub Releases rejects assets over 2 GiB.
           if ($setup -ge 2048) { throw "installer is over the 2 GiB GitHub Releases limit" }
+      - name: Build the GPU pack
+        # The same app on torch's CUDA 12.6 wheel (ctranslate2 4.8 needs cuBLAS 12 + cuDNN 9, which it
+        # ships), split into core + NVIDIA-libs zips and gpu-pack.json (package_gpu.py).
+        run: |
+          $ver = if ($env:GITHUB_REF_TYPE -eq "tag") { $env:GITHUB_REF_NAME.TrimStart("v") } else { "0.0.0" }
+          uv pip install --python venv\Scripts\python.exe "torch==2.13.0+cu126" --index-url https://download.pytorch.org/whl/cu126
+          if ($LASTEXITCODE) { throw "CUDA torch install failed" }
+          $env:FLOW_VERSION = $ver
+          venv\Scripts\python.exe -m PyInstaller FlowStudio.spec --noconfirm --distpath dist-gpu --workpath build-gpu
+          if ($LASTEXITCODE) { throw "PyInstaller failed" }
+          venv\Scripts\python.exe package_gpu.py dist-gpu\FlowStudio $ver gpu-out
+          if ($LASTEXITCODE) { throw "package_gpu.py failed" }
+          Remove-Item dist-gpu, build-gpu -Recurse -Force
+          Get-ChildItem gpu-out | Select-Object Name, @{n="MB"; e={[int]($_.Length / 1MB)}} | Format-Table -AutoSize |
+            Out-String | Tee-Object -Append $env:GITHUB_STEP_SUMMARY
+      - name: GPU pack selftest with the network blocked
+        timeout-minutes: 15
+        # No GPU on the runner, so this runs on the CPU, but from the installed pack: the app
+        # from its core folder, the NVIDIA libs from theirs (torch won't import if they don't resolve).
+        run: |
+          venv\Scripts\python.exe -c "import json, pathlib, gpu_pack; gpu_pack.install(json.load(open('gpu-out/gpu-pack.json')), pathlib.Path('gpu-out'))"
+          if ($LASTEXITCODE) { throw "installing the GPU pack failed" }
+          $gpu = "$env:LOCALAPPDATA\FlowStudio\gpu"
+          $m = Get-Content "$gpu\pack.json" | ConvertFrom-Json
+          $exe = "$gpu\$($m.core)\FlowStudio.exe"
+          New-NetFirewallRule -DisplayName "FlowStudio GPU offline" -Direction Outbound -Program $exe -Action Block | Out-Null
+          $env:FLOW_GPU = "1"
+          $env:FLOW_GPU_LIBS = "$gpu\$($m.libs)"
+          $env:HF_HUB_CACHE = "$env:LOCALAPPDATA\Programs\FlowStudio\models\hub"   # the CPU install's bundled models
+          $p = Start-Process $exe -ArgumentList "--selftest" -Wait -PassThru
+          Get-Content "$env:LOCALAPPDATA\FlowStudio\flow_studio_gpu.log"
+          exit $p.ExitCode
+      - name: Launcher falls back to the CPU
+        timeout-minutes: 10
+        # The CPU build starts the pack; with no CUDA device its check fails and the CPU build carries on.
+        run: |
+          $p = Start-Process "$env:LOCALAPPDATA\Programs\FlowStudio\FlowStudio.exe" -PassThru
+          $deadline = (Get-Date).AddMinutes(5)
+          while ($true) {
+            try { Invoke-WebRequest http://127.0.0.1:7600/ -TimeoutSec 2 -UseBasicParsing | Out-Null; break } catch {}
+            if ((Get-Date) -gt $deadline) { throw "nothing answered on :7600" }
+            Start-Sleep 1
+          }
+          Get-Content "$env:LOCALAPPDATA\FlowStudio\flow_studio.log"
+          Get-Content "$env:LOCALAPPDATA\FlowStudio\flow_studio_gpu.log"
+          $m = Get-Content "$env:LOCALAPPDATA\FlowStudio\gpu\pack.json" | ConvertFrom-Json
+          if ($p.HasExited) { throw "the CPU build exited (code $($p.ExitCode))" }
+          if (-not $m.failed) { throw "the launcher didn't record the failed GPU start" }
+          "pack.json failed: $($m.failed)"
+          Stop-Process -Name FlowStudio -Force
       - name: Publish to GitHub Releases
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         # Whichever OS finishes first creates the release; the other uploads into it.
         run: |
-          gh release create $env:GITHUB_REF_NAME FlowStudioSetup.exe --title "Flow Studio $env:GITHUB_REF_NAME" --generate-notes
-          if ($LASTEXITCODE) { gh release upload $env:GITHUB_REF_NAME FlowStudioSetup.exe }
+          $assets = @("FlowStudioSetup.exe") + (Get-ChildItem gpu-out).FullName
+          gh release create $env:GITHUB_REF_NAME @assets --title "Flow Studio $env:GITHUB_REF_NAME" --generate-notes
+          if ($LASTEXITCODE) { gh release upload $env:GITHUB_REF_NAME @assets }
   macos:
     if: github.event_name != 'pull_request'
     runs-on: macos-14   # arm64

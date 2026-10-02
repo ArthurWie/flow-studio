@@ -16,7 +16,11 @@ PACKAGES = ["torch", "kokoro", "misaki", "en_core_web_sm", "spacy", "thinc",
             "faster_whisper", "ctranslate2", "sounddevice", "soundfile", "av",
             "onnxruntime", "webview", "espeakng_loader", "phonemizer", "num2words",
             "language_tags", "pymupdf", "trafilatura", "justext"]
-datas, binaries, hidden = [("flow.ico", "."), ("flow.icns", ".")], [], []
+# The version the app reports (gpu_pack fetches the GPU pack of the same version).
+os.makedirs("build", exist_ok=True)
+with open("build/version.txt", "w") as f:
+    f.write(os.environ.get("FLOW_VERSION", "0.0.0"))
+datas, binaries, hidden = [("flow.ico", "."), ("flow.icns", "."), ("build/version.txt", ".")], [], []
 for pkg in PACKAGES:
     d, b, h = collect_all(pkg)
     datas += d; binaries += b; hidden += h

@@ -67,7 +67,7 @@ VOICES = [
 app = Flask(__name__)
 
 _pipelines = {}
-_device = None  # "mps" or "cpu", picked on the first pipeline load
+_device = None  # "cuda", "mps" or "cpu", picked on the first pipeline load
 _pipeline_lock = threading.Lock()
 _generate_lock = threading.Lock()
 jobs = {}
@@ -108,15 +108,17 @@ def _use_cpu():
 
 
 def get_pipeline(lang_code):
-    """Kokoro on MPS when the Mac has it, else CPU (falling back to CPU if MPS fails to load).
-    CUDA waits for the optional GPU pack."""
+    """Kokoro on CUDA in the GPU pack's build (FLOW_GPU), on MPS when the Mac has it, else on
+    the CPU (falling back to the CPU if the GPU fails to load)."""
     global _device
     with _pipeline_lock:
         if lang_code not in _pipelines:
             import torch
             from kokoro import KPipeline
             if _device is None:
-                if torch.backends.mps.is_available():
+                if os.environ.get("FLOW_GPU") and torch.cuda.is_available():
+                    _device = "cuda"
+                elif torch.backends.mps.is_available():
                     _device = "mps"
                 else:
                     _use_cpu()
