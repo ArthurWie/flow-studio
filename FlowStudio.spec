@@ -2,6 +2,7 @@
 #   pyinstaller FlowStudio.spec --noconfirm              # windowed (production)
 #   set FLOW_CONSOLE=1 & pyinstaller FlowStudio.spec     # console build, shows startup errors
 # Output: dist/FlowStudio/  (onedir; package.ps1 adds models/ and wraps it with Inno Setup)
+#         macOS also: dist/Flow Studio.app  (package.sh adds models, signs ad-hoc, wraps it in a .dmg)
 #
 # The --collect-all list is the flag set verified with the old build.ps1 (the frozen exe
 # loads torch + kokoro + misaki + spaCy en_core_web_sm and generates audio) plus pymupdf.
@@ -15,7 +16,7 @@ PACKAGES = ["torch", "kokoro", "misaki", "en_core_web_sm", "spacy", "thinc",
             "faster_whisper", "ctranslate2", "sounddevice", "soundfile", "av",
             "onnxruntime", "webview", "espeakng_loader", "phonemizer", "num2words",
             "language_tags", "pymupdf", "trafilatura", "justext"]
-datas, binaries, hidden = [("flow.ico", ".")], [], []
+datas, binaries, hidden = [("flow.ico", "."), ("flow.icns", ".")], [], []
 for pkg in PACKAGES:
     d, b, h = collect_all(pkg)
     datas += d; binaries += b; hidden += h
@@ -37,3 +38,14 @@ exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="FlowStudio",
           console=bool(os.environ.get("FLOW_CONSOLE")),
           icon="flow.ico" if sys.platform == "win32" else None)
 coll = COLLECT(exe, a.binaries, a.datas, name="FlowStudio")
+if sys.platform == "darwin":
+    app = BUNDLE(coll, name="Flow Studio.app", icon="flow.icns",
+                 # keep it stable: macOS ties the mic/Accessibility grants to it
+                 bundle_identifier="io.github.arthurwie.flowstudio",
+                 version=os.environ.get("FLOW_VERSION", "0.0.0"),
+                 info_plist={
+                     "NSMicrophoneUsageDescription":
+                         "Flow Studio listens to your microphone while dictation is on, and turns your speech into text on this Mac.",
+                     "LSMinimumSystemVersion": "14.0",   # torch 2.13's macOS wheel floor
+                     "NSHighResolutionCapable": True,
+                 })

@@ -36,10 +36,13 @@ if getattr(sys, "frozen", False):
     if sys.stdout is None or sys.stderr is None:
         data_dir().mkdir(parents=True, exist_ok=True)
         sys.stdout = sys.stderr = open(data_dir() / "flow_studio.log", "w", encoding="utf-8", buffering=1)
-    # The installer ships the default models as a Hugging Face cache next to the exe. They load
+    # The installer ships the default models as a Hugging Face cache next to the exe (in
+    # Contents/Resources/ of the Mac .app: Contents/MacOS/ may only hold code). They load
     # in place, read-only (no first-run copy); everything the hub writes (user downloads, xet,
     # token) goes to HF_HOME in the data dir. flow.get_whisper() looks in both caches.
-    os.environ.setdefault("HF_HUB_CACHE", str(Path(sys.executable).resolve().parent / "models" / "hub"))
+    _exe_dir = Path(sys.executable).resolve().parent
+    _bundle = _exe_dir.parent / "Resources" if sys.platform == "darwin" else _exe_dir
+    os.environ.setdefault("HF_HUB_CACHE", str(_bundle / "models" / "hub"))
     os.environ.setdefault("HF_HOME", str(data_dir() / "models"))
     # Never ask the Hub for revisions when loading a cached model (offline that hangs or fails).
     # flow.hf_online() lifts this only for a user-started download.

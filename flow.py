@@ -219,34 +219,70 @@ def ollama_up():
     return ollama_models() is not None
 
 
-OLLAMA_INSTALLER_URL = "https://ollama.com/download/OllamaSetup.exe"
+OLLAMA_DOWNLOAD = {"win32": "https://ollama.com/download/OllamaSetup.exe",
+                   "darwin": "https://ollama.com/download/Ollama-darwin.zip"}
+# /Applications when we can write there (the Ollama app asks to be moved there otherwise).
+MAC_APPS = Path("/Applications") if os.access("/Applications", os.W_OK) else Path.home() / "Applications"
 
 
 def ollama_exe():
     found = shutil.which("ollama")
     if found:
         return found
-    cand = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama" / "ollama.exe"
-    return str(cand) if cand.exists() else "ollama"
+    for cand in (Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama" / "ollama.exe",
+                 Path("/Applications/Ollama.app/Contents/Resources/ollama"),
+                 Path.home() / "Applications/Ollama.app/Contents/Resources/ollama"):
+        if cand.is_absolute() and cand.exists():
+            return str(cand)
+    return "ollama"
+
+
+def _install_mac_ollama(zip_path):
+    """Unpack Ollama.app next to the zip, then move it into MAC_APPS only if it carries a
+    valid Apple-issued signature."""
+    unpacked = zip_path.with_suffix("")
+    shutil.rmtree(unpacked, ignore_errors=True)
+    subprocess.run(["ditto", "-x", "-k", str(zip_path), str(unpacked)], check=True)  # keeps the signature intact
+    zip_path.unlink(missing_ok=True)
+    try:
+        if not osi.signature_ok(unpacked / "Ollama.app"):
+            raise RuntimeError("the downloaded Ollama app failed signature verification; not running it")
+        MAC_APPS.mkdir(exist_ok=True)
+        shutil.rmtree(MAC_APPS / "Ollama.app", ignore_errors=True)
+        shutil.move(str(unpacked / "Ollama.app"), str(MAC_APPS / "Ollama.app"))
+    finally:
+        shutil.rmtree(unpacked, ignore_errors=True)
 
 
 def setup_ollama():
     """Optional cleanup setup, started from the dashboard: install Ollama if it's missing
-    (only a validly signed installer is run), then pull the cleanup model.
+    (only a validly signed installer/app is run), then pull the cleanup model.
     Progress lands in state["ollama_setup"]; failure is non-fatal (raw transcripts)."""
     state["ollama_setup"] = "running"
     no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
-        if not ollama_up() and not shutil.which("ollama"):
-            if sys.platform != "win32":
-                raise RuntimeError("automatic Ollama install is Windows-only for now; install it from ollama.com")
-            dest = DATA_DIR / "OllamaSetup.exe"
-            with urllib.request.urlopen(OLLAMA_INSTALLER_URL, timeout=60) as r, open(dest, "wb") as f:
+        if not ollama_up() and ollama_exe() == "ollama":
+            url = OLLAMA_DOWNLOAD.get(sys.platform)
+            if not url:
+                raise RuntimeError("automatic Ollama install is Windows/macOS-only for now; install it from ollama.com")
+            dest = DATA_DIR / url.rsplit("/", 1)[1]
+            with urllib.request.urlopen(url, timeout=60) as r, open(dest, "wb") as f:
                 shutil.copyfileobj(r, f)
-            if not osi.signature_ok(dest):
-                dest.unlink(missing_ok=True)
-                raise RuntimeError("the downloaded Ollama installer failed signature verification; not running it")
-            subprocess.run([str(dest), "/SILENT"], check=True)  # its own installer UI may show
+            if sys.platform == "darwin":
+                _install_mac_ollama(dest)
+            else:
+                if not osi.signature_ok(dest):
+                    dest.unlink(missing_ok=True)
+                    raise RuntimeError("the downloaded Ollama installer failed signature verification; not running it")
+                subprocess.run([str(dest), "/SILENT"], check=True)  # its own installer UI may show
+        if sys.platform == "darwin" and not ollama_up():
+            # The CLI needs the app's server; the Windows installer starts it on its own.
+            app = MAC_APPS / "Ollama.app"
+            subprocess.run(["open", "-a", str(app) if app.exists() else "Ollama"], check=True)
+            for _ in range(60):
+                if ollama_up():
+                    break
+                time.sleep(1)
         subprocess.run([ollama_exe(), "pull", "qwen2.5:3b"], check=True, creationflags=no_window)
         state["ollama_ok"] = ollama_up()
         resolve_cleanup_model()

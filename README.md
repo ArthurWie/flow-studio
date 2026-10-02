@@ -14,8 +14,9 @@ Everything runs on your machine. After the first model download, nothing leaves 
 ## For users (installed build)
 
 1. Download **FlowStudioSetup.exe** from the [Releases](../../releases) page and run it. It installs per-user (no admin) and adds a "Flow Studio" shortcut. It's unsigned for now, so SmartScreen asks once: **More info → Run anyway**.
+   On an Apple-silicon Mac (macOS 14+): download **FlowStudio.dmg**, drag **Flow Studio** to Applications. It's signed ad-hoc only (not notarized), so the first launch is blocked: System Settings → Privacy & Security → **Open Anyway**. It asks for the microphone on the first dictation and for Accessibility on the first paste.
 2. Launch **Flow Studio**. Everything ships in the installer — the engine and the default models (Kokoro-82M, Whisper `small`) — so there's no setup step and no download.
-3. Optionally click **set up cleanup** in the dictation dashboard's Cleanup card — it installs Ollama (only if its installer is validly signed) and pulls `qwen2.5:3b`. Dictation works without it (it just types the raw transcript).
+3. Optionally click **set up cleanup** in the dictation dashboard's Cleanup card — it installs Ollama (only if its installer — on the Mac, its app — is validly signed) and pulls `qwen2.5:3b`. Dictation works without it (it just types the raw transcript).
 
 Installing over an older Flow Studio upgrades it in place: the old `env\` folder is removed; history, pronunciations and settings in `%LOCALAPPDATA%\FlowStudio` are kept. The installer adds the **WebView2 Runtime** if it's missing (preinstalled on Windows 11).
 
@@ -63,7 +64,7 @@ macOS grants the microphone and Accessibility permissions to the app that launch
 - **Microphone:** the first dictation shows the system prompt for the terminal. If you missed it, allow the terminal under System Settings → Privacy & Security → Microphone and restart it.
 - **Accessibility** (paste): the first paste opens the prompt; allow the terminal under Privacy & Security → Accessibility.
 
-The frozen `.app` (phase 3) will ask for these itself; its `Info.plist` needs `NSMicrophoneUsageDescription`, e.g. "Flow Studio listens to your microphone while dictation is on, and turns your speech into text on this Mac."
+The frozen `.app` asks for these itself (its `Info.plist` carries `NSMicrophoneUsageDescription`, from `FlowStudio.spec`).
 
 ### Self-tests (no mic needed)
 
@@ -88,6 +89,8 @@ The frozen build's `--selftest` has no console: it writes to `flow_studio.log` i
 
 CI builds the installer ([`.github/workflows/release.yml`](.github/workflows/release.yml), `windows-latest`): it installs `requirements-win.lock`, runs `package.ps1`, installs the result silently, runs `FlowStudio.exe --selftest` with the app's outbound network blocked by a firewall rule, and records the sizes in the job summary. Pushing a `v*` tag publishes `FlowStudioSetup.exe` to GitHub Releases (artifacts are too big).
 
+A second job does the same on `macos-14` (arm64) with `requirements-mac.lock` and `package.sh` → **`FlowStudio.dmg`**; the selftest runs under `sandbox-exec` with outbound network denied except loopback. It runs only on `v*` tags and `gh workflow run release --ref <branch>`, never on PRs: Mac minutes count 10× on a private repo. Locally on the Mac: same two `uv` lines with `requirements-mac.lock` and `venv/bin/python`, then `./package.sh`. The `.dmg` is ad-hoc signed; the Developer ID + notarization steps for a public release are in `package.sh`'s header.
+
 Locally, on Windows:
 
 ```powershell
@@ -104,7 +107,8 @@ Requires **Inno Setup 6** (`ISCC.exe` on PATH, in its Program Files location, or
 4. compiles `FlowStudio.iss` → **`FlowStudioSetup.exe`**, installing per-user (no admin) to `%LOCALAPPDATA%\Programs\FlowStudio`.
 
 `requirements-win.lock` pins the full tree for reproducible builds. Regenerate it after changing `requirements.txt`:
-`uv pip compile requirements.txt --python-version 3.12 --python-platform x86_64-pc-windows-msvc -o requirements-win.lock`.
+`uv pip compile requirements.txt --python-version 3.12 --python-platform x86_64-pc-windows-msvc -o requirements-win.lock`
+(Mac: `MACOSX_DEPLOYMENT_TARGET=14.0 uv pip compile requirements.txt --python-version 3.12 --python-platform aarch64-apple-darwin -o requirements-mac.lock`; torch 2.13 has no wheel below macOS 14).
 
 **What fought the freezer (spike findings):** *not torch* — its PyInstaller hooks work out of the box. The real work was data-file collection for the NLP stack, which is why the spec's `collect_all` list is long:
 
