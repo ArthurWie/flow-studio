@@ -1,0 +1,58 @@
+name: release
+# Frozen Windows build → selftest with the network blocked → Inno installer.
+# A `v*` tag publishes the installer to GitHub Releases; PRs touching the build only check it.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - FlowStudio.spec
+      - FlowStudio.iss
+      - package.ps1
+      - requirements-win.lock
+      - flow_studio.py
+      - .github/workflows/release.yml
+permissions:
+  contents: write
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      - name: Install pinned dependencies
+        run: |
+          uv venv --python 3.12 venv
+          uv pip install --python venv\Scripts\python.exe -r requirements-win.lock pyinstaller==6.22.3
+      - name: Ensure Inno Setup 6
+        run: if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+      - name: Build installer
+        run: |
+          $ver = if ($env:GITHUB_REF_TYPE -eq "tag") { $env:GITHUB_REF_NAME.TrimStart("v") } else { "0.0.0" }
+          .\package.ps1 -Version $ver
+      - name: Install silently
+        run: Start-Process .\FlowStudioSetup.exe -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait
+      - name: Selftest with the network blocked
+        timeout-minutes: 15
+        run: |
+          $exe = "$env:LOCALAPPDATA\Programs\FlowStudio\FlowStudio.exe"
+          # Outbound block for the app only (loopback stays open for its own servers).
+          New-NetFirewallRule -DisplayName "FlowStudio offline" -Direction Outbound -Program $exe -Action Block | Out-Null
+          $p = Start-Process $exe -ArgumentList "--selftest" -Wait -PassThru
+          Get-Content "$env:LOCALAPPDATA\FlowStudio\flow_studio.log"   # windowed build: output goes here
+          exit $p.ExitCode
+      - name: Record sizes
+        run: |
+          $setup = (Get-Item FlowStudioSetup.exe).Length / 1MB
+          $installed = (Get-ChildItem "$env:LOCALAPPDATA\Programs\FlowStudio" -Recurse -File | Measure-Object Length -Sum).Sum / 1MB
+          "Installer: {0:N0} MB, installed: {1:N0} MB" -f $setup, $installed | Tee-Object -Append $env:GITHUB_STEP_SUMMARY
+      - name: Publish to GitHub Releases
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create $env:GITHUB_REF_NAME FlowStudioSetup.exe --title "Flow Studio $env:GITHUB_REF_NAME" --generate-notes

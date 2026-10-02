@@ -10,6 +10,7 @@ output_*.wav
 build/
 dist/
 *.spec
+!FlowStudio.spec
 FlowStudio-build/
 .superpowers/
 stage/
