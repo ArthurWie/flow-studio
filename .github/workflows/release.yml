@@ -115,6 +115,13 @@ jobs:
           if (-not $m.failed) { throw "the launcher didn't record the failed GPU start" }
           "pack.json failed: $($m.failed)"
           Stop-Process -Name FlowStudio -Force
+      - name: Keep the installer (manual runs)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v7
+        with:
+          name: FlowStudioSetup
+          path: FlowStudioSetup.exe
+          retention-days: 7
       - name: Publish to GitHub Releases
         if: github.ref_type == 'tag'
         env:
