@@ -28,6 +28,11 @@ snapshot_download('hexgrad/Kokoro-82M', allow_patterns=['config.json', 'kokoro-v
 "@
 if ($LASTEXITCODE -ne 0) { throw "model download failed" }
 Remove-Item (Join-Path $env:HF_HOME "xet") -Recurse -Force -ErrorAction Ignore   # download-only chunk cache
+# Without symlinks (Windows) the cache holds every file 3x: per-repo blobs\, the shared
+# hub\blobs\ and the snapshots\ copy. Loading only reads snapshots\ (huggingface_hub
+# returns the snapshot file before it looks at blobs), so drop the blob stores.
+@(Get-ChildItem (Join-Path $env:HF_HOME "hub") -Recurse -Directory -Filter blobs) |
+  Remove-Item -Recurse -Force
 Remove-Item Env:HF_HOME
 
 # 3. WebView2 Evergreen bootstrapper; the installer runs it only when the runtime is missing.
