@@ -22,6 +22,15 @@ for pkg in PACKAGES:
 for pkg in ("en_core_web_sm", "spacy", "torch", "numpy"):
     datas += copy_metadata(pkg)
 
+
+def _runtime(entry):
+    """Drop build-time files collect_all drags in (torch's static .lib, C++ headers, debug symbols)."""
+    src = entry[0].replace("\\", "/")
+    return not (src.endswith((".lib", ".pdb", ".h", ".hpp", ".cuh")) or "/include/" in src)
+
+
+datas, binaries = list(filter(_runtime, datas)), list(filter(_runtime, binaries))
+
 a = Analysis(["flow_studio.py"], datas=datas, binaries=binaries, hiddenimports=hidden)
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="FlowStudio",

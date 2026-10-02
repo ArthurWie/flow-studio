@@ -51,6 +51,10 @@ jobs:
           $setup = (Get-Item FlowStudioSetup.exe).Length / 1MB
           $installed = (Get-ChildItem "$env:LOCALAPPDATA\Programs\FlowStudio" -Recurse -File | Measure-Object Length -Sum).Sum / 1MB
           "Installer: {0:N0} MB, installed: {1:N0} MB" -f $setup, $installed | Tee-Object -Append $env:GITHUB_STEP_SUMMARY
+          Get-ChildItem "$env:LOCALAPPDATA\Programs\FlowStudio" -Recurse -File | Sort-Object Length -Descending |
+            Select-Object -First 25 @{n="MB"; e={[int]($_.Length / 1MB)}}, FullName | Format-Table -AutoSize | Out-String -Width 300
+          # GitHub Releases rejects assets over 2 GiB.
+          if ($setup -ge 2048) { throw "installer is over the 2 GiB GitHub Releases limit" }
       - name: Publish to GitHub Releases
         if: github.ref_type == 'tag'
         env:
