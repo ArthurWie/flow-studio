@@ -36,12 +36,17 @@ if getattr(sys, "frozen", False):
     if sys.stdout is None or sys.stderr is None:
         data_dir().mkdir(parents=True, exist_ok=True)
         sys.stdout = sys.stderr = open(data_dir() / "flow_studio.log", "w", encoding="utf-8", buffering=1)
-    # The installer ships the default models as a Hugging Face cache next to the exe
-    # (in Contents/Resources/ of the Mac .app: Contents/MacOS/ may only hold code).
-    # ponytail: user downloads land there too; #14 decides bundled-vs-user cache.
+    # The installer ships the default models as a Hugging Face cache next to the exe (in
+    # Contents/Resources/ of the Mac .app: Contents/MacOS/ may only hold code). They load
+    # in place, read-only (no first-run copy); everything the hub writes (user downloads, xet,
+    # token) goes to HF_HOME in the data dir. flow.get_whisper() looks in both caches.
     _exe_dir = Path(sys.executable).resolve().parent
-    os.environ.setdefault("HF_HOME", str(_exe_dir.parent / "Resources" / "models" if sys.platform == "darwin"
-                                         else _exe_dir / "models"))
+    _bundle = _exe_dir.parent / "Resources" if sys.platform == "darwin" else _exe_dir
+    os.environ.setdefault("HF_HUB_CACHE", str(_bundle / "models" / "hub"))
+    os.environ.setdefault("HF_HOME", str(data_dir() / "models"))
+    # Never ask the Hub for revisions when loading a cached model (offline that hangs or fails).
+    # flow.hf_online() lifts this only for a user-started download.
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 import app as tts   # Kokoro TTS Studio  (Flask app on :7500)
 import flow         # Flow dictation      (Flask app on :7600)

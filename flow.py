@@ -29,6 +29,7 @@ from pathlib import Path
 import numpy as np
 
 from paths import data_dir
+import model_manager as mm
 if sys.platform == "darwin":
     import os_mac as osi
 else:
@@ -164,9 +165,18 @@ def get_whisper(size):
     global _wmodel, _wsize
     if _wmodel is None or size != _wsize:
         from faster_whisper import WhisperModel
-        _wmodel = WhisperModel(size, device="cpu", compute_type="int8")
+        _wmodel = WhisperModel(whisper_path(size), device="cpu", compute_type="int8")
         _wsize = size
     return _wmodel
+
+
+def whisper_path(size):
+    """The model folder from the bundled or the user cache, with no network. A size that isn't
+    there is downloaded only from the model manager, never silently here."""
+    snap = mm.find("whisper/" + size)[1]
+    if snap is None:
+        raise RuntimeError(f"Whisper {size} isn't downloaded. Download it under Models.")
+    return str(snap)
 
 
 def transcribe_seg(model, audio, lang):
@@ -665,9 +675,70 @@ def api_reset():
 @app.route("/api/model", methods=["POST"])
 def api_model():
     row = (request.get_json(force=True) or {}).get("row")
-    if row in WHISPER_SIZES:
+    if row in WHISPER_SIZES and mm.find("whisper/" + WHISPER_SIZES[row])[1]:
         settings["whisper_row"] = row
         save_settings()
+    return jsonify(ok=True, whisper_row=settings["whisper_row"])
+
+
+# ── model manager (model_manager.py does the work) ──────────────────────────
+def _model_keys():
+    """Whisper rows, then Kokoro (base model + the TTS tool's voices) when the TTS tool is alongside."""
+    keys = {"whisper/" + size: row for row, size in WHISPER_SIZES.items()}
+    try:
+        import app as tts
+        keys["kokoro"] = "Kokoro-82M"
+        keys.update(("kokoro/" + v, label) for v, label in tts.VOICES)
+    except ImportError:
+        pass
+    return keys
+
+
+@app.route("/api/models")
+def api_models():
+    rows = []
+    for key, name in _model_keys().items():
+        status, snap = mm.find(key)
+        rows.append({"key": key, "name": name, "status": status, "size": mm.size(key, snap),
+                     "deletable": status == "downloaded" and mm.deletable(key)})
+    return jsonify(models=rows, job=mm.job_state(), whisper_row=settings["whisper_row"])
+
+
+def _use_downloaded(key):
+    """A finished download of a Whisper size becomes the dictation model (the user asked for it)."""
+    row = next((r for r, size in WHISPER_SIZES.items() if "whisper/" + size == key), None)
+    if row:
+        settings["whisper_row"] = row
+        save_settings()
+
+
+@app.route("/api/models/download", methods=["POST"])
+def api_models_download():
+    key = (request.get_json(force=True) or {}).get("key")
+    if key not in _model_keys():
+        return jsonify(ok=False, error="unknown model"), 400
+    if mm.find(key)[1]:
+        return jsonify(ok=True)
+    if not mm.download(key, on_done=_use_downloaded):
+        return jsonify(ok=False, error="another download is running"), 409
+    return jsonify(ok=True)
+
+
+@app.route("/api/models/delete", methods=["POST"])
+def api_models_delete():
+    global _wmodel, _wsize
+    key = (request.get_json(force=True) or {}).get("key")
+    if key not in _model_keys() or not mm.deletable(key):
+        return jsonify(ok=False, error="only downloaded Whisper models can be deleted"), 400
+    if "whisper/" + WHISPER_SIZES.get(settings["whisper_row"], "") == key:
+        settings["whisper_row"] = "faster-whisper-small"   # back to the bundled default
+        save_settings()
+    if _wsize and "whisper/" + _wsize == key:
+        _wmodel = _wsize = None    # release the loaded model before its files go
+    try:
+        mm.delete(key)
+    except OSError as e:
+        return jsonify(ok=False, error=str(e)), 500
     return jsonify(ok=True, whisper_row=settings["whisper_row"])
 
 
@@ -1088,33 +1159,81 @@ async function applyHotkey(combo, modal){
 $("todayDate").textContent = new Date().toLocaleDateString('en-US', {weekday:'short', month:'short', day:'numeric'});
 
 const MODELS = [
-  {name:'faster-whisper-small', size:'244 MB', speed:'9.4×', wer:'8.2%', kind:'whisper', desc:'The sweet spot for live dictation. Fast first token, solid accuracy on clean speech.'},
-  {name:'faster-whisper-medium', size:'769 MB', speed:'4.1×', wer:'6.8%', kind:'whisper', desc:'Noticeably better with accents and jargon. Slower on battery.'},
-  {name:'faster-whisper-large-v3', size:'1.5 GB', speed:'1.6×', wer:'5.1%', kind:'whisper', desc:'Best accuracy in the Whisper family. Great for careful re-transcription.'},
+  {name:'faster-whisper-small', speed:'9.4×', wer:'8.2%', kind:'whisper', desc:'The sweet spot for live dictation. Fast first token, solid accuracy on clean speech.'},
+  {name:'faster-whisper-medium', speed:'4.1×', wer:'6.8%', kind:'whisper', desc:'Noticeably better with accents and jargon. Slower on battery.'},
+  {name:'faster-whisper-large-v3', speed:'1.6×', wer:'5.1%', kind:'whisper', desc:'Best accuracy in the Whisper family. Great for careful re-transcription.'},
   {name:'parakeet-tdt-0.6b', size:'640 MB', speed:'12.8×', wer:'6.1%', kind:'other', tag:'trending', desc:"NVIDIA's TDT decoder — not wired up in this build."},
   {name:'moonshine-base', size:'62 MB', speed:'14.2×', wer:'9.9%', kind:'other', tag:'tiny', desc:'Tiny footprint. Not wired up in this build.'},
 ];
 let curRow = 'faster-whisper-small';
 let curTab = 'general';
+let mstate = {models:[], job:null}, mpoll = null;
+
+const esc = t => String(t==null?'':t).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmtB = b => b>=1e9 ? (b/1e9).toFixed(2)+' GB' : b>=1e6 ? Math.round(b/1e6)+' MB' : Math.max(1,Math.round(b/1e3))+' KB';
+const badge = (t,[c,bg,bd]) => `<span class="mono" style="font-size:10px; color:${c}; background:${bg}; border:1px solid ${bd}; border-radius:5px; padding:1.5px 7px;">${t}</span>`;
+const BADGE = {
+  loaded:['#2E7D43','#EAF4EC','#D4E8D9'], bundled:['#6B6353','#F5F1EB','#E5DDCC'], downloaded:['#6B6353','#F5F1EB','#E5DDCC'],
+  'not downloaded':['#8A8378','#FFFFFF','#D8CFBC'], downloading:['#8A6215','#FAF0DC','#F0E1C2'], failed:['#B3261E','#FCEDEC','#F2D3D0'], unavailable:['#8A8378','#FFFFFF','#D8CFBC'],
+};
+const mbtn = (act,key,label) => `<button class="btnchg" data-act="${act}" data-key="${esc(key)}">${label}</button>`;
+
+async function loadModels(){
+  try { mstate = await (await fetch('/api/models')).json(); } catch(e){ return; }
+  curRow = mstate.whisper_row; $("modelName").textContent = curRow;
+  renderModels();
+  clearTimeout(mpoll);
+  if (mstate.job && mstate.job.state==='downloading' && $("modelList")) mpoll = setTimeout(loadModels, 500);
+}
+async function modelAction(act, key){
+  if (act==='delete' && !confirm('Delete this model from disk?')) return;
+  const r = await (await post(act==='delete'?'/api/models/delete':'/api/models/download', {key})).json();
+  if (!r.ok) alert(r.error||'Failed');
+  loadModels();
+}
+
+// One row's status: progress while downloading, the error with Retry, else its status + Download/Delete.
+function modelStatus(r){
+  const j = mstate.job && mstate.job.key===r.key ? mstate.job : null;
+  const busy = mstate.job && mstate.job.state==='downloading';
+  if (j && j.state==='downloading'){
+    const pct = j.total ? Math.min(100, 100*j.done/j.total) : 0;
+    return {t:'downloading', extra:`<div style="height:5px;background:#F1EBDF;border-radius:3px;margin-top:9px;overflow:hidden;"><div style="height:100%;width:${pct}%;background:#1F1D1A;"></div></div>
+      <div class="mono" style="font-size:11px;color:#8A8378;margin-top:5px;">${fmtB(j.done)} / ${j.total?fmtB(j.total):'…'} · ${fmtB(j.speed)}/s</div>`};
+  }
+  if (j && j.state==='error' && r.status==='not downloaded')
+    return {t:'failed', extra:`<div style="font-size:12px;color:#B3261E;margin-top:7px;">Download failed: ${esc(j.error)}. The current model stays in use.</div>`, btn: busy?'':mbtn('download',r.key,'Retry')};
+  return {t:r.status, btn: r.status==='not downloaded' ? (busy?'':mbtn('download',r.key,'Download')) : r.deletable ? mbtn('delete',r.key,'Delete') : ''};
+}
 
 function renderModels(){
   const box = $("modelList"); if(!box) return; box.innerHTML='';
   for (const m of MODELS){
+    const r = m.kind==='whisper' ? (mstate.models||[]).find(x=>x.name===m.name) : null;
     const sel = m.name===curRow;
-    const dl = m.kind==='other';
+    const st = r ? modelStatus(r) : {t:'unavailable'};
+    if (sel && st.t!=='downloading' && st.t!=='failed') st.t = 'loaded';
+    const usable = r && r.status!=='not downloaded';
     const row = document.createElement('div');
-    row.style.cssText = `border:${sel?'1.5px solid #1F1D1A':'1px solid #ECE5D8'}; background:${sel?'#FBF8F3':'#FFFFFF'}; border-radius:11px; padding:13px 15px; cursor:${dl?'default':'pointer'};`;
-    const status = dl ? {t:'unavailable',c:'#8A8378',bg:'#FFFFFF',bd:'#D8CFBC'} : (sel?{t:'loaded',c:'#2E7D43',bg:'#EAF4EC',bd:'#D4E8D9'}:{t:'ready',c:'#6B6353',bg:'#F5F1EB',bd:'#E5DDCC'});
+    row.style.cssText = `border:${sel?'1.5px solid #1F1D1A':'1px solid #ECE5D8'}; background:${sel?'#FBF8F3':'#FFFFFF'}; border-radius:11px; padding:13px 15px; cursor:${usable?'pointer':'default'};`;
     row.innerHTML = `<div style="display:flex; align-items:center; gap:8px;">
         <span class="mono" style="font-size:13px; font-weight:600;">${m.name}</span>
         ${m.tag?`<span class="mono" style="font-size:10px; color:#8A6215; background:#FAF0DC; border:1px solid #F0E1C2; border-radius:5px; padding:1.5px 6px;">${m.tag}</span>`:''}
-        <span class="mono" style="font-size:10px; margin-left:auto; color:${status.c}; background:${status.bg}; border:1px solid ${status.bd}; border-radius:5px; padding:1.5px 7px;">${status.t}</span>
+        <span style="margin-left:auto; display:flex; align-items:center; gap:8px;">${st.btn||''}${badge(st.t, BADGE[st.t])}</span>
       </div>
       <div style="font-size:12.5px; color:#6B6353; line-height:1.45; margin-top:5px;">${m.desc}</div>
-      <div class="mono" style="display:flex; gap:16px; margin-top:9px; font-size:11px; color:#8A8378;"><span>${m.size}</span><span>${m.speed} realtime</span><span>WER ${m.wer}</span></div>`;
-    if (!dl) row.onclick = async () => { curRow=m.name; const r=await (await post('/api/model',{row:m.name})).json(); curRow=r.whisper_row; renderModels(); $("modelName").textContent=curRow; };
+      <div class="mono" style="display:flex; gap:16px; margin-top:9px; font-size:11px; color:#8A8378;"><span>${r?fmtB(r.size):m.size}</span><span>${m.speed} realtime</span><span>WER ${m.wer}</span></div>${st.extra||''}`;
+    if (usable) row.onclick = async () => { const res=await (await post('/api/model',{row:m.name})).json(); curRow=res.whisper_row; renderModels(); $("modelName").textContent=curRow; };
     box.appendChild(row);
   }
+  const vbox = $("voiceList");
+  if (vbox){
+    const voices = (mstate.models||[]).filter(x=>x.key.startsWith('kokoro'));
+    vbox.innerHTML = voices.length ? voices.map(r => { const st = modelStatus(r); return `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-top:1px solid #F4EFE6;flex-wrap:wrap;">
+        <span style="font-size:13px;">${esc(r.name)}</span><span class="mono" style="font-size:11px;color:#8A8378;margin-left:auto;">${fmtB(r.size)}</span>${st.btn||''}${badge(st.t, BADGE[st.t])}<div style="flex-basis:100%;">${st.extra||''}</div></div>`; }).join('')
+      : `<div style="font-size:12.5px;color:#8A8378;">The TTS tool isn't running alongside.</div>`;
+  }
+  document.querySelectorAll('[data-act]').forEach(b => b.onclick = e => { e.stopPropagation(); modelAction(b.dataset.act, b.dataset.key); });
 }
 
 // ── settings modal ──────────────────────────────────────────────
@@ -1153,8 +1272,11 @@ async function renderModelsTab(body){
      <div id="modelList" style="display:flex;flex-direction:column;gap:10px;"></div>
      <div style="font-size:13px;font-weight:700;margin:22px 0 3px;">Cleanup model</div>
      <div style="font-size:12.5px;color:#8A8378;margin-bottom:10px;">Local LLM that removes fillers and adds punctuation (Ollama)</div>
-     <select class="sel" id="cleanupSel" style="max-width:none;width:100%;"></select>`;
-  renderModels();
+     <select class="sel" id="cleanupSel" style="max-width:none;width:100%;"></select>
+     <div style="font-size:13px;font-weight:700;margin:22px 0 3px;">Text to speech voices</div>
+     <div style="font-size:12.5px;color:#8A8378;margin-bottom:6px;">Kokoro-82M · ships with the app</div>
+     <div id="voiceList"></div>`;
+  renderModels(); loadModels();
   let om = {models:[],current:''};
   try { om = await (await fetch('/api/ollama_models')).json(); } catch(e){}
   const sel = $("cleanupSel");

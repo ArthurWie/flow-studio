@@ -22,7 +22,7 @@ app="dist/Flow Studio.app"
 FLOW_VERSION="${1:-1.0.0}" "$py" -m PyInstaller FlowStudio.spec --noconfirm --distpath dist --workpath build
 
 # 2. Bundle the default models as a Hugging Face cache in Contents/Resources/models
-#    (flow_studio.py points HF_HOME there): Kokoro-82M + its voices, faster-whisper small.
+#    (flow_studio.py points HF_HUB_CACHE at models/hub and loads them in place): Kokoro-82M + its voices, faster-whisper small.
 #    The cache's snapshot symlinks stay: codesign seals them and the .dmg keeps them.
 export HF_HOME="$app/Contents/Resources/models"
 "$py" -c "

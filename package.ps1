@@ -18,7 +18,7 @@ if ($Debug) { $env:FLOW_CONSOLE = "1" } else { Remove-Item Env:FLOW_CONSOLE -Err
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 
 # 2. Bundle the default models as a Hugging Face cache next to the exe (flow_studio.py
-#    points HF_HOME there): Kokoro-82M + its voices, faster-whisper small.
+#    points HF_HUB_CACHE at models\hub and loads them in place): Kokoro-82M + voices, whisper small.
 $env:HF_HOME = Join-Path $dist "models"
 & $py -c @"
 import faster_whisper
