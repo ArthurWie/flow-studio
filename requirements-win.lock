@@ -13,8 +13,10 @@ attrs==26.1.0
     #   jsonschema
     #   phonemizer-fork
     #   referencing
-av==19.0.0
-    # via faster-whisper
+av==18.1.0
+    # via
+    #   -r requirements.txt
+    #   faster-whisper
 babel==2.18.0
     # via
     #   courlan

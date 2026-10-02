@@ -35,6 +35,8 @@ torch==2.13.0
 # kokoro pulls transformers unpinned; without a floor the resolver backtracks to 2.3.0,
 # whose tokenizers 0.13.3 has no Python 3.12 wheel (needs a Rust source build).
 transformers>=4.48
+# faster-whisper 1.2.1 calls av.open(..., metadata_errors=...), which av 19 removed.
+av<19
 
 # Text extraction for the TTS tool's "Open PDF" button. Chosen over pypdf for
 # layout-aware extraction: it keeps columns and spacing readable, which matters
