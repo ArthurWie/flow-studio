@@ -11,6 +11,7 @@ no terminal — double-click the desktop shortcut.
   python flow_studio.py            → opens the app window
   pythonw flow_studio.py           → same, with no console window (used by the shortcut)
   python flow_studio.py --selftest → starts both servers, runs a Kokoro → Whisper round trip, exits
+  python flow_studio.py toggle     → start/stop dictation in the running app (bind it to a desktop shortcut)
 """
 
 import difflib
@@ -31,6 +32,14 @@ sys.path.insert(0, str(BASE_DIR))
 
 import gpu_pack
 from paths import data_dir
+
+if sys.argv[1:2] == ["toggle"]:  # before the heavy imports: a desktop shortcut runs this
+    try:
+        urllib.request.urlopen(urllib.request.Request(
+            "http://127.0.0.1:7600/api/toggle", method="POST"), timeout=5).read()
+    except OSError as exc:
+        sys.exit(f"Flow Studio isn't running ({exc}).")
+    sys.exit(0)
 
 if getattr(sys, "frozen", False):
     # Windowed build: no console, so stdout/stderr are None and any print/tqdm would crash.
