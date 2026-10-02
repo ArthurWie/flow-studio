@@ -116,9 +116,25 @@ def start_capture():
         except Exception:
             pass
 
-    _stream = sd.InputStream(samplerate=REC_SR, channels=1, dtype="float32",
-                             callback=cb, device=settings.get("mic_index"))
-    _stream.start()
+    def open_stream(device):
+        s = sd.InputStream(samplerate=REC_SR, channels=1, dtype="float32",
+                           callback=cb, device=device)
+        try:
+            s.start()
+        except Exception:
+            s.close()
+            raise
+        return s
+
+    dev = settings.get("mic_index")
+    try:
+        _stream = open_stream(dev)
+    except Exception as exc:
+        if dev is None:
+            raise
+        # device indices shift on plug/unplug/reboot; a stale saved index shouldn't kill dictation
+        _dbg(f"mic {dev} failed ({exc}); using default input")
+        _stream = open_stream(None)
 
 
 def stop_capture():
