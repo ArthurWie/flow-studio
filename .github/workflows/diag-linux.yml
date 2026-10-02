@@ -15,11 +15,21 @@ jobs:
           uv pip install --python venv/bin/python --torch-backend cpu -r requirements-linux.lock
           sudo apt-get update -qq
           sudo apt-get install -y -qq libportaudio2 libegl1 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-shape0 libxcb-util1 libxcb-xkb1 libxkbcommon-x11-0 xvfb gdb
-      - name: gdb backtrace
+      - name: faulthandler
         run: |
-          timeout 90 xvfb-run -a gdb -batch -ex run -ex "thread apply all bt 25" -ex "py-bt" --args venv/bin/python -X faulthandler flow_studio.py > gdb.log 2>&1 || true
-          grep -v "GET \|POST " gdb.log | tail -250
-      - name: sandbox off
+          timeout 60 xvfb-run -a venv/bin/python -X faulthandler flow_studio.py > a.log 2>&1 || echo "exit=$?"
+          grep -v "GET \|POST " a.log | head -150
+      - name: gdb crashing thread
         run: |
-          QTWEBENGINE_DISABLE_SANDBOX=1 timeout 60 xvfb-run -a venv/bin/python -X faulthandler flow_studio.py > a.log 2>&1; echo "exit=$?"
-          grep -v "GET \|POST " a.log | tail -60
+          timeout 90 xvfb-run -a gdb -batch -ex run -ex bt -ex py-bt --args venv/bin/python flow_studio.py > gdb.log 2>&1 || true
+          grep -v "GET \|POST \|New Thread\|exited with code\|Detaching after" gdb.log | grep -A60 -B5 "received signal" | head -120
+      - name: no tray
+        run: |
+          printf 'import sys, flow_studio\nflow_studio._run_tray = lambda win: None\nflow_studio.main()\n' > notray.py
+          timeout 60 xvfb-run -a venv/bin/python -X faulthandler notray.py > b.log 2>&1 || echo "exit=$?"
+          grep -v "GET \|POST " b.log | tail -40
+      - name: no overlay
+        run: |
+          printf 'import sys, flow_studio\nflow_studio._overlay_controller = lambda o, a: None\nflow_studio.main()\n' > nooverlay.py
+          timeout 60 xvfb-run -a venv/bin/python -X faulthandler nooverlay.py > c.log 2>&1 || echo "exit=$?"
+          grep -v "GET \|POST " c.log | tail -40
