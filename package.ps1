@@ -28,11 +28,17 @@ snapshot_download('hexgrad/Kokoro-82M', allow_patterns=['config.json', 'kokoro-v
 "@
 if ($LASTEXITCODE -ne 0) { throw "model download failed" }
 Remove-Item (Join-Path $env:HF_HOME "xet") -Recurse -Force -ErrorAction Ignore   # download-only chunk cache
-# Without symlinks (Windows) the cache holds every file 3x: per-repo blobs\, the shared
-# hub\blobs\ and the snapshots\ copy. Loading only reads snapshots\ (huggingface_hub
-# returns the snapshot file before it looks at blobs), so drop the blob stores.
-@(Get-ChildItem (Join-Path $env:HF_HOME "hub") -Recurse -Directory -Filter blobs) |
-  Remove-Item -Recurse -Force
+# The cache's snapshots\ files are symlinks into blobs\, and Inno follows symlinks, so
+# each model would ship twice (plus hub 1.x's shared hub\blobs\). Loading only reads
+# snapshots\ (huggingface_hub returns the snapshot file before it looks at blobs):
+# turn the links into real files, then drop the blob stores.
+$hub = Join-Path $env:HF_HOME "hub"
+foreach ($link in @(Get-ChildItem $hub -Recurse -File | Where-Object LinkType)) {
+  [IO.File]::Copy($link.FullName, "$($link.FullName).real")   # reads through the link
+  Remove-Item $link.FullName
+  Rename-Item "$($link.FullName).real" $link.Name
+}
+@(Get-ChildItem $hub -Recurse -Directory -Filter blobs) | Remove-Item -Recurse -Force
 Remove-Item Env:HF_HOME
 
 # 3. WebView2 Evergreen bootstrapper; the installer runs it only when the runtime is missing.
