@@ -4,12 +4,31 @@
 # Puts the app in ~/.local/share/flow-studio/app (the folder above it holds your history,
 # settings and models, so reinstalling keeps them), adds the `flow-studio` command to
 # ~/.local/bin and a launcher to the app menu, then names any missing system libraries
-# with the apt / dnf command that installs them.
+# with the apt / dnf command that installs them. `install-linux.sh --uninstall` removes the
+# app, command and launcher, and keeps your data.
 set -euo pipefail
 src=$(cd "$(dirname "$0")" && pwd)
 data=${XDG_DATA_HOME:-$HOME/.local/share}
 dest=$data/flow-studio/app
 bin=$HOME/.local/bin
+
+# ── --uninstall: remove the app, command and launcher; the data folder stays ──
+if [ "${1:-}" = --uninstall ]; then
+  gone=()
+  for f in "$dest" "$data/applications/flow-studio.desktop"; do [ -e "$f" ] && gone+=("$f"); done
+  [ "$(readlink "$bin/flow-studio" || true)" = "$dest/FlowStudio" ] && gone+=("$bin/flow-studio")
+  if [ ${#gone[@]} = 0 ]; then
+    echo "Flow Studio isn't installed: nothing to remove."
+  else
+    rm -rf "${gone[@]}" "$dest.new" "$dest.old"
+    command -v update-desktop-database >/dev/null && update-desktop-database -q "$data/applications" || true
+    echo "Flow Studio is uninstalled."
+  fi
+  if [ -d "$data/flow-studio" ]; then
+    echo "Your history, settings and models are still in $data/flow-studio; delete that folder to remove them too."
+  fi
+  exit 0
+fi
 
 # ── system libraries ────────────────────────────────────────────────────────
 # The window (Qt WebEngine, bundled) links a few desktop libraries the distro provides;
