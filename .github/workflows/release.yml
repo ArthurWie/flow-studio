@@ -162,10 +162,12 @@ jobs:
           gh release create "$GITHUB_REF_NAME" FlowStudio.dmg --title "Flow Studio $GITHUB_REF_NAME" --generate-notes ||
             gh release upload "$GITHUB_REF_NAME" FlowStudio.dmg
   manifest:
-    # The updater's signed latest.json (see updater.py), once both installers are on the release.
+    # The updater's signed latest.json (see updater.py), once the installers are on the release.
+    # The Linux tarball comes from release-linux.yml, which `needs:` can't wait on: poll the release for it.
     if: github.ref_type == 'tag'
     needs: [windows, macos]
     runs-on: ubuntu-latest
+    timeout-minutes: 110
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.2.0
@@ -175,7 +177,16 @@ jobs:
           UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
         run: |
           if [ -z "$UPDATE_SIGNING_KEY" ]; then echo "::warning::UPDATE_SIGNING_KEY secret is missing, no latest.json published (installed apps see no update)"; exit 0; fi
-          gh release download "$GITHUB_REF_NAME" -p FlowStudioSetup.exe -p FlowStudio.dmg
-          uv run --python 3.12 --with cryptography python updater.py manifest "${GITHUB_REF_NAME#v}" "$GITHUB_REF_NAME" FlowStudioSetup.exe FlowStudio.dmg
+          files="FlowStudioSetup.exe FlowStudio.dmg" linux=flow-studio-linux-x86_64.tar.gz
+          # release-linux.yml has a 90-minute timeout; give up a little after it (Windows and Mac still update).
+          for i in $(seq 200); do
+            if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" --jq '.assets[] | select(.state == "uploaded") | .name' | grep -qx "$linux"; then
+              files="$files $linux"; break
+            fi
+            sleep 30
+          done
+          case "$files" in *"$linux"*) ;; *) echo "::warning::no $linux on the release, latest.json has no Linux update" ;; esac
+          for f in $files; do gh release download "$GITHUB_REF_NAME" -p "$f"; done
+          uv run --python 3.12 --with cryptography python updater.py manifest "${GITHUB_REF_NAME#v}" "$GITHUB_REF_NAME" $files
           cat latest.json
           gh release upload "$GITHUB_REF_NAME" latest.json latest.json.sig --clobber

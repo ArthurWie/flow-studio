@@ -5,6 +5,7 @@ import os
 import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -139,3 +140,31 @@ def test_no_check_in_a_dev_run(release, monkeypatch):
     monkeypatch.setattr(updater.gpu_pack, "app_version", lambda: "dev")
     updater.check()
     assert _Range.ranges == [] and updater.status["state"] == "idle"
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="the Linux install path")
+def test_linux_reinstall_runs_the_new_install_script(tmp_path, monkeypatch):
+    import subprocess
+    import tarfile
+    src = tmp_path / "src" / "flow-studio"
+    src.mkdir(parents=True)
+    script = src / "install-linux.sh"
+    script.write_text(f'#!/bin/sh\necho "$(basename "$(dirname "$0")")" > {tmp_path}/ran\n')
+    script.chmod(0o755)
+    tgz = tmp_path / "new.tar.gz"
+    with tarfile.open(tgz, "w:gz") as t:
+        t.add(src, "flow-studio")
+    monkeypatch.setattr(updater, "DIR", tmp_path / "update")
+    updater.DIR.mkdir()
+    launched = []
+    real = subprocess.Popen   # subprocess.run goes through Popen too: only catch the relaunch shell
+    monkeypatch.setattr(subprocess, "Popen", lambda args, **kw: launched.append(args) if args[0] == "/bin/sh" else real(args, **kw))
+    updater._reinstall(tgz)
+    assert (tmp_path / "ran").read_text().strip() == "flow-studio"
+    assert launched[0][-1].endswith("/.local/bin/flow-studio")
+    script.write_text("#!/bin/sh\nexit 1\n")   # a failed install: the unpacked copy is cleaned up, no relaunch
+    with tarfile.open(tgz, "w:gz") as t:
+        t.add(src, "flow-studio")
+    with pytest.raises(subprocess.CalledProcessError):
+        updater._reinstall(tgz)
+    assert len(launched) == 1 and [p.name for p in updater.DIR.iterdir()] == [Path(launched[0][-2]).name]
