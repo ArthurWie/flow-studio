@@ -29,13 +29,16 @@ def _read_only(root):
         os.chmod(d, stat.S_IREAD | stat.S_IEXEC)
 
 
+WHISPER = ["config.json", "model.bin", "tokenizer.json", "vocabulary.txt"]
+
+
 @pytest.fixture
 def caches(tmp_path, monkeypatch):
     bundled, home = tmp_path / "bundled" / "hub", tmp_path / "user"
     snaps = {
         "kokoro": _cache_repo(bundled, "hexgrad/Kokoro-82M", ["config.json", "kokoro-v1_0.pth", "voices/af_heart.pt"]),
-        "small": _cache_repo(bundled, "Systran/faster-whisper-small", ["model.bin"]),
-        "medium": _cache_repo(home / "hub", "Systran/faster-whisper-medium", ["model.bin"]),
+        "small": _cache_repo(bundled, "Systran/faster-whisper-small", WHISPER),
+        "medium": _cache_repo(home / "hub", "Systran/faster-whisper-medium", WHISPER),
     }
     _read_only(bundled)
     monkeypatch.setattr(constants, "HF_HUB_CACHE", str(bundled))
@@ -58,16 +61,10 @@ def test_whisper_prefers_bundled_then_user_cache(caches):
     assert os.path.samefile(flow.whisper_path("medium"), caches["medium"])
 
 
-def test_missing_whisper_downloads_into_user_cache_with_offline_lifted(caches, monkeypatch):
-    real, calls = huggingface_hub.snapshot_download, []
+def test_missing_whisper_raises_instead_of_downloading(caches, monkeypatch):
+    def no_download(*a, **kw):
+        raise AssertionError("get_whisper must not download; the model manager does")
 
-    def fake(repo_id, **kw):
-        if kw.get("local_files_only"):
-            return real(repo_id, **kw)
-        calls.append((repo_id, kw["cache_dir"], constants.HF_HUB_OFFLINE))
-        return "downloaded"
-
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake)
-    assert flow.whisper_path("large-v3") == "downloaded"
-    assert calls == [("Systran/faster-whisper-large-v3", os.path.join(constants.HF_HOME, "hub"), False)]
-    assert constants.HF_HUB_OFFLINE is True   # restored after the download
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", no_download)
+    with pytest.raises(RuntimeError, match="isn't downloaded"):
+        flow.whisper_path("large-v3")
