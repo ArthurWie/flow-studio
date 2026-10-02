@@ -1,14 +1,15 @@
 """Auto-updater (#17): a signed latest.json on GitHub Releases → verified, resumable download →
 silent install → relaunch. The app side is stdlib only.
 
-  latest.json      {"version": "1.2.0", "assets": {"win32": {"url", "sha256", "size"}, "darwin": {...}}}
+  latest.json      {"version": "1.2.0", "assets": {"win32": {"url", "sha256", "size"}, "darwin": {...}, "linux": {...}}}
   latest.json.sig  hex ed25519 signature of latest.json's exact bytes (PUBLIC_KEY below verifies it)
 
-CI builds and signs both (see __main__). Linux joins once it has a frozen build (phase 4).
+CI builds and signs both (see __main__).
 """
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -25,7 +26,8 @@ MANIFEST_URL = RELEASES + "/latest/download/latest.json"
 # Hex ed25519 public key; the private half is the UPDATE_SIGNING_KEY repo secret.
 # Make the pair with `uv run --with cryptography python updater.py keygen`. Empty = updates off.
 PUBLIC_KEY = ""
-ASSET = {"win32": "FlowStudioSetup.exe", "darwin": "FlowStudio.dmg"}   # release file per OS
+ASSET = {"win32": "FlowStudioSetup.exe", "darwin": "FlowStudio.dmg",   # release file per OS
+         "linux": "flow-studio-linux-x86_64.tar.gz"}
 DIR = data_dir() / "update"
 
 status = {"state": "idle"}   # idle | available | downloading | ready | installing | error, + version/done/total/error
@@ -122,7 +124,7 @@ def check():
         for f in DIR.glob("*"):   # downloads of other versions, the installer that just ran
             if not (newer and f.name.startswith(asset["sha256"])):
                 with suppress(OSError):   # Windows: the installer may still be running
-                    f.unlink()
+                    shutil.rmtree(f) if f.is_dir() else f.unlink()   # dir: an unpacked Linux tarball
         if newer:
             status.update(state="available", version=m["version"], asset=asset)
             if any(DIR.glob(asset["sha256"] + "*")):
@@ -171,6 +173,8 @@ def _apply(f):
                          creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
     elif sys.platform == "darwin":
         _swap_app(f)
+    elif sys.platform == "linux":
+        _reinstall(f)
     else:
         raise RuntimeError("no installer for this OS yet")
     os._exit(0)
@@ -195,6 +199,25 @@ def _swap_app(dmg):
         raise OSError(ctypes.get_errno(), f"couldn't swap in the new {app.name}")
     subprocess.Popen(["/bin/sh", "-c", 'while kill -0 "$0" 2>/dev/null; do sleep 0.2; done; rm -rf "$1"; open "$2"',
                       str(os.getpid()), str(new), str(app)], start_new_session=True)
+
+
+def _reinstall(tarball):
+    """Unpack the new tarball and run its install-linux.sh (it copies next to the old app and
+    swaps, so a failure leaves this version installed), then leave a shell to delete the unpacked
+    copy and start the new version once this process is gone."""
+    import tarfile
+    import tempfile
+    tmp = Path(tempfile.mkdtemp(dir=DIR))
+    try:
+        with tarfile.open(tarball) as t:
+            t.extractall(tmp, filter="data")
+        subprocess.run([str(tmp / "flow-studio" / "install-linux.sh")], check=True)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    subprocess.Popen(["/bin/sh", "-c", 'while kill -0 "$0" 2>/dev/null; do sleep 0.2; done; rm -rf "$1"; exec "$2"',
+                      str(os.getpid()), str(tmp), str(Path.home() / ".local" / "bin" / "flow-studio")],
+                     start_new_session=True, stdin=subprocess.DEVNULL)
 
 
 def ui_state():
