@@ -120,7 +120,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
         run: |
-          if [ -z "$UPDATE_SIGNING_KEY" ]; then echo "UPDATE_SIGNING_KEY secret is missing"; exit 1; fi
+          if [ -z "$UPDATE_SIGNING_KEY" ]; then echo "::warning::UPDATE_SIGNING_KEY secret is missing, no latest.json published (installed apps see no update)"; exit 0; fi
           gh release download "$GITHUB_REF_NAME" -p FlowStudioSetup.exe -p FlowStudio.dmg
           uv run --python 3.12 --with cryptography python updater.py manifest "${GITHUB_REF_NAME#v}" "$GITHUB_REF_NAME" FlowStudioSetup.exe FlowStudio.dmg
           cat latest.json
