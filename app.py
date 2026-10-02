@@ -32,13 +32,15 @@ import numpy as np
 import soundfile as sf
 from flask import Flask, Response, jsonify, request, send_from_directory
 
+from paths import data_dir
+
 SAMPLE_RATE = 24000
 # Kokoro uses a few ops MPS lacks; let torch run those on the CPU. Read when torch loads.
 if sys.platform == "darwin":
     os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 BASE_DIR = Path(__file__).resolve().parent
-# Writable data lives outside the (possibly read-only) install dir. Twin of flow.py's DATA_DIR.
-DATA_DIR = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "FlowStudio"
+# Writable data lives outside the (possibly read-only) install dir.
+DATA_DIR = data_dir()
 OUTPUT_DIR = DATA_DIR / "outputs"
 CHUNK_DIR = OUTPUT_DIR / "_chunks"
 PDF_DIR = DATA_DIR / "_pdfs"

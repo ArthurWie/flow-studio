@@ -12,6 +12,8 @@ import os
 import sys
 from pathlib import Path
 
+from paths import data_dir
+
 
 def _program_dir():
     if getattr(sys, "frozen", False):          # PyInstaller exe
@@ -27,7 +29,7 @@ UV_EXE = PROGRAM_DIR / "uv.exe"
 REQUIREMENTS = PROGRAM_DIR / "requirements.txt"
 APP_ENTRY = PROGRAM_DIR / "flow_studio.py"
 
-DATA_DIR = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "FlowStudio"
+DATA_DIR = data_dir()
 MODELS_DIR = DATA_DIR / "models"
 MARKER = ENV_DIR / ".setup_complete"
 SETUP_LOG = DATA_DIR / "setup.log"

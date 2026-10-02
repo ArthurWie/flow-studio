@@ -16,6 +16,7 @@ UI is a faithful build of the "Flow" design mockup (cream / ink / orange).
 import json
 import os
 import re
+import sys
 import threading
 import time
 import urllib.request
@@ -25,13 +26,15 @@ from pathlib import Path
 
 import numpy as np
 
+from paths import data_dir
 import os_win as osi  # ponytail: the only OS adapter so far; pick os_mac/os_linux here in phases 2/4
 
 BASE_DIR = Path(__file__).resolve().parent
-# Writable data lives outside the (possibly read-only) install dir. Twin of app.py's DATA_DIR.
-DATA_DIR = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "FlowStudio"
+# Writable data lives outside the (possibly read-only) install dir.
+DATA_DIR = data_dir()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 HIST_FILE = DATA_DIR / "flow_history.json"
+SETTINGS_FILE = DATA_DIR / "settings.json"
 REC_SR = 16000  # faster-whisper wants 16 kHz mono
 OLLAMA_URL = "http://127.0.0.1:11434"  # NOT localhost: on Windows it tries IPv6 first and adds ~2s/call
 DEBUG_LOG = DATA_DIR / "flow_debug.log"
@@ -54,11 +57,29 @@ WHISPER_SIZES = {
 settings = {
     "whisper_row": "faster-whisper-small",  # which model row is selected
     "cleanup_model": "qwen2.5:3b",          # ollama model for cleanup (better German than llama3.2)
-    "hotkey": "ctrl+shift+space",           # alt+space is a Windows system shortcut; ctrl+alt=AltGr on DE keyboards
+    # alt+space is a Windows system shortcut; ctrl+alt=AltGr on DE keyboards
+    "hotkey": "cmd+shift+space" if sys.platform == "darwin" else "ctrl+shift+space",
     "language": None,                       # None = auto-detect; or "en", "de", …
     "mic_index": None,                      # None = system default input device
     "overlay_style": "equalizer",           # equalizer | line | dots | orb
 }
+
+
+def load_settings():
+    """Overlay settings.json onto the defaults; unknown keys and a corrupt file are ignored."""
+    try:
+        saved = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        settings.update({k: v for k, v in saved.items() if k in settings})
+    except (OSError, ValueError, AttributeError):
+        pass
+
+
+def save_settings():
+    try:
+        SETTINGS_FILE.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    except OSError as exc:
+        _dbg(f"save settings: {exc}")
+
 
 # Shared state the dashboard polls. status: idle|recording|transcribing|cleaning|done
 state = {
@@ -457,6 +478,7 @@ def set_hotkey(spec):
 def start():
     """Init shared by `python flow.py` and flow_studio: Ollama probe, cleanup model,
     global hotkey. Returns whether the hotkey is active."""
+    load_settings()
     state["ollama_ok"] = ollama_up()
     resolve_cleanup_model()
     try:
@@ -508,6 +530,7 @@ def api_overlay_style():
     st = (request.get_json(force=True) or {}).get("style")
     if st in ("equalizer", "line", "dots", "orb"):
         settings["overlay_style"] = st
+        save_settings()
     return jsonify(ok=True, overlay_style=settings["overlay_style"])
 
 
@@ -542,6 +565,7 @@ def api_model():
     row = (request.get_json(force=True) or {}).get("row")
     if row in WHISPER_SIZES:
         settings["whisper_row"] = row
+        save_settings()
     return jsonify(ok=True, whisper_row=settings["whisper_row"])
 
 
@@ -553,6 +577,7 @@ def api_language():
         settings["language"] = None if v in (None, "", "auto") else v
     else:  # no body → cycle (used by the quick pill in the hero)
         settings["language"] = {None: "en", "en": "de", "de": None}.get(settings["language"])
+    save_settings()
     state["detected_lang"] = ""  # forced value should win in the UI
     return jsonify(ok=True, language=settings["language"] or "auto")
 
@@ -576,6 +601,7 @@ def api_mics():
 def api_mic():
     idx = (request.get_json(force=True) or {}).get("index")
     settings["mic_index"] = None if idx in (None, "", "auto") else int(idx)
+    save_settings()
     return jsonify(ok=True, mic_index=settings["mic_index"])
 
 
@@ -590,6 +616,7 @@ def api_cleanup_model():
     name = (request.get_json(force=True) or {}).get("model")
     if name:
         settings["cleanup_model"] = name
+        save_settings()
     return jsonify(ok=True, cleanup_model=settings["cleanup_model"])
 
 
@@ -603,6 +630,7 @@ def api_hotkey():
     except ValueError:
         return jsonify(ok=False, error="Pick a combination that includes a normal key (not only modifiers)."), 400
     settings["hotkey"] = hk
+    save_settings()
     return jsonify(ok=ok, hotkey=settings["hotkey"])
 
 

@@ -86,7 +86,7 @@ Two build paths, depending on whether the target machine has internet access for
 .\package.ps1     # builds bootstrap.exe, fetches uv, stages files, runs Inno Setup
 ```
 
-Requires **Inno Setup 6** (`ISCC.exe` on PATH, in its Program Files location, or the per-user `%LOCALAPPDATA%\Programs\Inno Setup 6` — `package.ps1` checks all three). Under the hood it: freezes `bootstrap.py` to `bootstrap.exe` with PyInstaller (`--onefile --noconsole` — stdlib-only, so it packs small and fast), fetches `uv.exe`, stages `flow_studio.py` / `app.py` / `flow.py` / `flow.ico` / `requirements.txt` / `bootstrap.exe` / `uv.exe`, then compiles `FlowStudio.iss`.
+Requires **Inno Setup 6** (`ISCC.exe` on PATH, in its Program Files location, or the per-user `%LOCALAPPDATA%\Programs\Inno Setup 6` — `package.ps1` checks all three). Under the hood it: freezes `bootstrap.py` to `bootstrap.exe` with PyInstaller (`--onefile --noconsole` — stdlib-only, so it packs small and fast), fetches `uv.exe`, stages `flow_studio.py` / `app.py` / `flow.py` / `os_win.py` / `paths.py` / `flow.ico` / `requirements.txt` / `bootstrap.exe` / `uv.exe`, then compiles `FlowStudio.iss`.
 
 Output: **`FlowStudioSetup.exe`** (~26 MB, LZMA-compressed over an ~85 MB payload), installing per-user (no admin) to `%LOCALAPPDATA%\Programs\FlowStudio`. On first launch, `bootstrap.exe` runs `uv venv` + `uv pip install` against `requirements.txt` and warms the models — see [For users](#for-users-installed-build) above for the user-facing flow.
 
@@ -116,7 +116,7 @@ The app registers a **global hotkey and pastes via the clipboard** — behavior 
 
 ### Deployment gotchas
 
-- **User-data paths.** History, the debug log, pronunciations, and TTS output write to `%LOCALAPPDATA%\FlowStudio` (`DATA_DIR` in both `app.py` and `flow.py`), not next to the code — safe under a read-only install dir. Bundled read-only resources (the HTML) still load from the install dir via `BASE_DIR`.
+- **User-data paths.** History, the debug log, pronunciations, and TTS output write to the per-OS data dir from `paths.data_dir()` (used by `app.py`, `flow.py` and `bootstrap.py`), not next to the code — safe under a read-only install dir. Bundled read-only resources (the HTML) still load from the install dir via `BASE_DIR`.
 - **Ports 7500/7600 are still fixed**, but a collision is now handled: each entry point probes the port before binding and reports it cleanly — a console message for `app.py`/`flow.py`, a Windows dialog for `flow_studio.py` (which runs under `pythonw`, no console). Werkzeug swallows bind errors and `sys.exit`s inside its own thread, so the pre-bind probe is the reliable place to catch this. Auto-selecting a free port is a possible future improvement.
 - **Ollama is separate.** It can't be bundled sanely — it's its own installer and background service. The lightweight installer's setup screen can install it for you (the optional "dictation cleanup" step); the offline bundle has no such step, so point users at ollama.com instead.
 
@@ -124,8 +124,9 @@ The app registers a **global hotkey and pastes via the clipboard** — behavior 
 
 ## Data & privacy
 
-All processing is local. Files are written to `%LOCALAPPDATA%\FlowStudio\`:
+All processing is local. Files are written to `%LOCALAPPDATA%\FlowStudio\` (Windows), `~/Library/Application Support/FlowStudio/` (macOS) or `$XDG_DATA_HOME/flow-studio/`, default `~/.local/share/flow-studio/` (Linux):
 
+- `settings.json` — dictation settings (hotkey, mic, Whisper model, cleanup model, language, overlay style).
 - `flow_history.json` — your dictated text (last 200 entries). Plaintext.
 - `flow_debug.log` — diagnostic log, appended to every run.
 - `pronunciations.json` — your TTS pronunciation overrides.
