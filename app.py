@@ -24,6 +24,7 @@ import threading
 import time
 import uuid
 import webbrowser
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -34,6 +35,9 @@ from flask import Flask, Response, jsonify, request, send_from_directory
 from paths import data_dir
 
 SAMPLE_RATE = 24000
+# Kokoro uses a few ops MPS lacks; let torch run those on the CPU. Read when torch loads.
+if sys.platform == "darwin":
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 BASE_DIR = Path(__file__).resolve().parent
 # Writable data lives outside the (possibly read-only) install dir.
 DATA_DIR = data_dir()
@@ -63,6 +67,7 @@ VOICES = [
 app = Flask(__name__)
 
 _pipelines = {}
+_device = None  # "mps" or "cpu", picked on the first pipeline load
 _pipeline_lock = threading.Lock()
 _generate_lock = threading.Lock()
 jobs = {}
@@ -94,12 +99,67 @@ def new_job():
     return job_id
 
 
+def _use_cpu():
+    """CPU TTS is a long, continuous load: leave half the cores to the foreground apps."""
+    global _device
+    import torch
+    _device = "cpu"
+    torch.set_num_threads(max(1, (os.cpu_count() or 2) // 2))
+
+
 def get_pipeline(lang_code):
+    """Kokoro on MPS when the Mac has it, else CPU (falling back to CPU if MPS fails to load).
+    CUDA waits for the optional GPU pack."""
+    global _device
     with _pipeline_lock:
         if lang_code not in _pipelines:
+            import torch
             from kokoro import KPipeline
-            _pipelines[lang_code] = KPipeline(lang_code=lang_code)
+            if _device is None:
+                if torch.backends.mps.is_available():
+                    _device = "mps"
+                else:
+                    _use_cpu()
+            try:
+                _pipelines[lang_code] = KPipeline(lang_code=lang_code, device=_device)
+            except Exception as e:
+                if _device == "cpu":
+                    raise
+                print(f"  [!] Kokoro on {_device} failed ({e}); using the CPU")
+                _use_cpu()
+                _pipelines[lang_code] = KPipeline(lang_code=lang_code, device=_device)
         return _pipelines[lang_code]
+
+
+@contextmanager
+def background_priority():
+    """Generate below the foreground apps' priority when TTS runs on the CPU.
+    Windows lowers the whole process and restores it afterwards, because thread priority
+    is not inherited by torch's worker threads (dictation during a read shares the lower
+    class). Unix lowers this thread only: nice (Linux) or the utility QoS class (Mac)."""
+    if _device != "cpu":
+        yield
+        return
+    if sys.platform == "win32":
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        k32.SetPriorityClass(k32.GetCurrentProcess(), 0x4000)  # BELOW_NORMAL_PRIORITY_CLASS
+        try:
+            yield
+        finally:
+            k32.SetPriorityClass(k32.GetCurrentProcess(), 0x20)  # NORMAL_PRIORITY_CLASS
+        return
+    # ponytail: torch's pool threads get the lower priority only if this thread spawned
+    # them; good enough while Linux is best-effort and the Mac uses MPS.
+    try:
+        if sys.platform == "darwin":
+            import ctypes
+            ctypes.CDLL(None).pthread_set_qos_class_self_np(0x11, 0)  # QOS_CLASS_UTILITY
+        else:
+            os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 10)  # per thread on Linux
+    except (OSError, AttributeError):
+        pass  # best effort: a priority failure must not stop the read
+    yield
 
 
 def load_pronunciations():
@@ -187,7 +247,7 @@ def run_job(job_id, text, primary, secondary, balance, speed):
         audio_parts = []
         para_cursor = 0  # index into para_starts we might match next
 
-        with _generate_lock:
+        with _generate_lock, background_priority():
             for i, result in enumerate(pipeline(prepared, voice=voice, speed=speed,
                                                 split_pattern=split_pattern)):
                 if job.get("cancel"):
