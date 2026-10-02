@@ -54,6 +54,17 @@ venv\Scripts\python app.py              # Text to Speech  → http://127.0.0.1:7
 venv\Scripts\python flow.py             # Dictation       → http://127.0.0.1:7600
 ```
 
+### On the Mac (dev runs)
+
+`python3 flow_studio.py` gives a Dock icon instead of a tray. Closing the window hides it while dictation keeps running; click the Dock icon to bring it back, and press Cmd+Q to quit. Dictation pops a floating overlay that never takes focus from the app you're typing into.
+
+macOS grants the microphone and Accessibility permissions to the app that launched Python, not to Python. In a dev run that's your terminal (Terminal, iTerm, the VS Code terminal…):
+
+- **Microphone:** the first dictation shows the system prompt for the terminal. If you missed it, allow the terminal under System Settings → Privacy & Security → Microphone and restart it.
+- **Accessibility** (paste): the first paste opens the prompt; allow the terminal under Privacy & Security → Accessibility.
+
+The frozen `.app` (phase 3) will ask for these itself; its `Info.plist` needs `NSMicrophoneUsageDescription`, e.g. "Flow Studio listens to your microphone while dictation is on, and turns your speech into text on this Mac."
+
 ### Self-tests (no mic needed)
 
 ```powershell
