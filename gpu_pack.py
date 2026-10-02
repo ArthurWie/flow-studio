@@ -99,11 +99,13 @@ def _sha256(path):
     return h.hexdigest()
 
 
-def _fetch(url, dest, size, sha256):
+def _fetch(url, dest, size, sha256, progress=None):
     """Download one file to dest, resuming a .part left by an earlier try with HTTP Range.
-    Verified before it's renamed to dest; a checksum mismatch deletes it."""
+    Verified before it's renamed to dest; a checksum mismatch deletes it.
+    Bytes count into progress["done"] (default: this module's job; the updater passes its own)."""
+    progress = job if progress is None else progress
     if dest.is_file() and dest.stat().st_size == size:
-        job["done"] += size
+        progress["done"] += size
         return
     part = dest.with_name(dest.name + ".part")
     for attempt in range(RETRIES):
@@ -111,25 +113,25 @@ def _fetch(url, dest, size, sha256):
         if have > size:
             part.unlink()
             have = 0
-        start = job["done"]
+        start = progress["done"]
         try:
             if have < size:
                 req = urllib.request.Request(url, headers={"Range": f"bytes={have}-"} if have else {})
                 with urllib.request.urlopen(req, timeout=60) as r:
                     if have and r.status != 206:   # server ignored the Range: start over
                         have = 0
-                    job["done"] += have
+                    progress["done"] += have
                     with open(part, "ab" if have else "wb") as f:
                         while chunk := r.read(1 << 20):
                             f.write(chunk)
-                            job["done"] += len(chunk)
+                            progress["done"] += len(chunk)
                 if part.stat().st_size < size:   # urllib ends a cut-short body quietly
                     raise ConnectionError("the connection dropped")
             else:
-                job["done"] += have
+                progress["done"] += have
             break
         except (OSError, http.client.HTTPException):   # URLError, reset, timeout, cut short: resume
-            job["done"] = start
+            progress["done"] = start
             if attempt == RETRIES - 1:
                 raise
             time.sleep(2 * (attempt + 1))
