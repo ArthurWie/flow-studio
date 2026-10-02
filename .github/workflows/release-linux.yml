@@ -19,7 +19,7 @@ permissions:
   contents: write
 jobs:
   linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # the build host's glibc is the minimum (glibc.txt): keep Ubuntu 24.04 supported
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7

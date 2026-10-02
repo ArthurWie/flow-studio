@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the Flow Studio Linux tarball end-to-end (CI runs this on ubuntu-latest).
+# Build the Flow Studio Linux tarball end-to-end (CI runs this on ubuntu-24.04).
 #   ./package-linux.sh            # → flow-studio-linux-x86_64.tar.gz
 #   ./package-linux.sh 1.2.0      # version the app reports
 # Needs: venv/ with requirements-linux.lock + pyinstaller installed (see release-linux.yml).
