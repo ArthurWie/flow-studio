@@ -15,6 +15,7 @@ Everything runs on your machine; your text and audio never leave it. The network
 
 1. Download **FlowStudioSetup.exe** from the [Releases](../../releases) page and run it. It installs per-user (no admin) and adds a "Flow Studio" shortcut. It's unsigned for now, so SmartScreen asks once: **More info → Run anyway**.
    On an Apple-silicon Mac (macOS 14+): download **FlowStudio.dmg**, drag **Flow Studio** to Applications. It's signed ad-hoc only (not notarized), so the first launch is blocked: System Settings → Privacy & Security → **Open Anyway**. It asks for the microphone on the first dictation and for Accessibility on the first paste.
+   On Linux (x86_64, glibc 2.39+: Ubuntu 24.04, Fedora 40 or newer): download **flow-studio-linux-x86_64.tar.gz**, then `tar xzf flow-studio-linux-x86_64.tar.gz && ./flow-studio/install-linux.sh`. No root needed: it installs to `~/.local/share/flow-studio/app`, adds the `flow-studio` command to `~/.local/bin` and a launcher to the app menu, and if a system library is missing (PortAudio for dictation, a few X/Qt libraries for the window) it prints the `sudo apt install …` / `sudo dnf install …` line that adds it. Run it again to update; your data in `~/.local/share/flow-studio` stays. For the dictation shortcut see [On Linux](#on-linux-dev-runs).
 2. Launch **Flow Studio**. Everything ships in the installer — the engine and the default models (Kokoro-82M, Whisper `small`) — so there's no setup step and no download.
 3. Optionally click **set up cleanup** in the dictation dashboard's Cleanup card — it installs Ollama (only if its installer — on the Mac, its app — is validly signed) and pulls `qwen2.5:3b`. Dictation works without it (it just types the raw transcript).
 
@@ -109,6 +110,8 @@ CI builds the installer ([`.github/workflows/release.yml`](.github/workflows/rel
 
 A second job does the same on `macos-14` (arm64) with `requirements-mac.lock` and `package.sh` → **`FlowStudio.dmg`**; the selftest runs under `sandbox-exec` with outbound network denied except loopback. It runs only on `v*` tags and `gh workflow run release --ref <branch>`, never on PRs: Mac minutes count 10× on a private repo. Locally on the Mac: same two `uv` lines with `requirements-mac.lock` and `venv/bin/python`, then `./package.sh`. The `.dmg` is ad-hoc signed; the Developer ID + notarization steps for a public release are in `package.sh`'s header.
 
+Linux has its own workflow ([`release-linux.yml`](.github/workflows/release-linux.yml), `ubuntu-24.04`, pinned because the build host’s glibc is the minimum, also on PRs that touch the Linux build): `requirements-linux.lock` (CPU torch: install it with `uv pip install --torch-backend cpu -r requirements-linux.lock`), `package-linux.sh` → **`flow-studio-linux-x86_64.tar.gz`**, then `install-linux.sh`, a check that the Qt window opens under Xvfb, `--selftest` in a network namespace with only loopback, and a bare `ubuntu:24.04` container where the apt line `install-linux.sh` prints must install everything it reported missing. The window is pywebview's Qt backend (PySide6, bundled): a bundled WebKitGTK wouldn't find its helper processes across distros.
+
 A last job, on tags only, downloads both installers from the release, writes **`latest.json`** (version, URL, SHA-256 and size per OS) and signs it with the `UPDATE_SIGNING_KEY` repo secret (`latest.json.sig`); the app verifies it against the public key in `updater.py`. Make the key pair once with `uv run --with cryptography python updater.py keygen`.
 
 Locally, on Windows:
@@ -128,7 +131,8 @@ Requires **Inno Setup 6** (`ISCC.exe` on PATH, in its Program Files location, or
 
 `requirements-win.lock` pins the full tree for reproducible builds. Regenerate it after changing `requirements.txt`:
 `uv pip compile requirements.txt --python-version 3.12 --python-platform x86_64-pc-windows-msvc -o requirements-win.lock`
-(Mac: `MACOSX_DEPLOYMENT_TARGET=14.0 uv pip compile requirements.txt --python-version 3.12 --python-platform aarch64-apple-darwin -o requirements-mac.lock`; torch 2.13 has no wheel below macOS 14).
+(Mac: `MACOSX_DEPLOYMENT_TARGET=14.0 uv pip compile requirements.txt --python-version 3.12 --python-platform aarch64-apple-darwin -o requirements-mac.lock`; torch 2.13 has no wheel below macOS 14.
+Linux: `uv pip compile requirements.txt --python-version 3.12 --python-platform x86_64-manylinux_2_28 --torch-backend cpu -o requirements-linux.lock`; without `--torch-backend cpu` PyPI's torch pulls ~3 GB of CUDA libraries).
 
 **What fought the freezer (spike findings):** *not torch* — its PyInstaller hooks work out of the box. The real work was data-file collection for the NLP stack, which is why the spec's `collect_all` list is long:
 

@@ -1,0 +1,96 @@
+name: release-linux
+# Frozen Linux build → install script → window check → selftest with the network blocked,
+# then a bare ubuntu:24.04 container: the install script must name the missing libraries,
+# the apt command it prints must install them, and the app must then pass its selftest.
+# A `v*` tag publishes the tarball to the GitHub Release (release.yml adds the Windows / Mac assets).
+# Its own workflow so Linux-only changes don't start the Windows build.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - FlowStudio.spec
+      - package-linux.sh
+      - install-linux.sh
+      - requirements-linux.lock
+      - .github/workflows/release-linux.yml
+permissions:
+  contents: write
+jobs:
+  linux:
+    runs-on: ubuntu-24.04   # the build host's glibc is the minimum (glibc.txt): keep Ubuntu 24.04 supported
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      - name: Install pinned dependencies
+        # --torch-backend cpu: the lock pins torch's CPU wheel, which lives on PyTorch's index
+        run: |
+          uv venv --python 3.12 venv
+          uv pip install --python venv/bin/python --torch-backend cpu -r requirements-linux.lock pyinstaller==6.22.3
+      - name: Build tarball
+        run: ./package-linux.sh "$([ "$GITHUB_REF_TYPE" = tag ] && echo "${GITHUB_REF_NAME#v}" || echo 0.0.0)"
+      - name: Install
+        # The runner gets its libraries from the apt command the install script prints.
+        run: |
+          tar xzf flow-studio-linux-x86_64.tar.gz -C "$RUNNER_TEMP"
+          sudo apt-get update -qq
+          "$RUNNER_TEMP/flow-studio/install-linux.sh" | tee install.log
+          if cmd=$(grep -o "sudo apt install .*" install.log); then
+            $cmd -y -qq
+            "$RUNNER_TEMP/flow-studio/install-linux.sh" | tee install.log
+            if grep -q "Missing system" install.log; then echo "the printed apt command left libraries missing"; exit 1; fi
+          fi
+      - name: The window opens
+        timeout-minutes: 5
+        # Runs before the selftest step lifts Ubuntu's user-namespace restriction, as on users' PCs.
+        run: |
+          sudo apt-get install -y -qq xvfb
+          xvfb-run -a ~/.local/bin/flow-studio > app.log 2>&1 &
+          pid=$!
+          for i in $(seq 120); do curl -sf -o /dev/null http://127.0.0.1:7600/ && break; sleep 1; done
+          sleep 20   # give Qt WebEngine time to come up (or crash)
+          cat app.log
+          kill -0 $pid || { echo "the app exited"; exit 1; }
+          if grep -q "Native window unavailable" app.log; then exit 1; fi
+          pkill -f .local/bin/flow-studio
+      - name: Selftest with the network blocked
+        timeout-minutes: 15
+        # A network namespace with only loopback up (the app's own servers listen there).
+        run: |
+          sudo sysctl -qw kernel.apparmor_restrict_unprivileged_userns=0
+          offline() { unshare -rn sh -c 'ip link set lo up && exec "$0" "$@"' "$@"; }
+          if offline curl -sS --max-time 10 -o /dev/null https://huggingface.co; then
+            echo "network block isn't working"; exit 1
+          fi
+          offline ~/.local/bin/flow-studio --selftest
+      - name: Bare ubuntu:24.04
+        timeout-minutes: 20
+        run: |
+          docker run --rm -v "$PWD:/w:ro" ubuntu:24.04 bash -euo pipefail -c '
+            apt-get update -qq
+            tar xzf /w/flow-studio-linux-x86_64.tar.gz -C /tmp
+            /tmp/flow-studio/install-linux.sh | tee /tmp/1.log
+            cmd=$(grep -o "sudo apt install .*" /tmp/1.log | sed "s/^sudo //") ||
+              { echo "a bare container should be missing libraries"; exit 1; }
+            DEBIAN_FRONTEND=noninteractive $cmd -y -qq
+            /tmp/flow-studio/install-linux.sh | tee /tmp/2.log
+            if grep -q "Missing system" /tmp/2.log; then echo "the printed apt command left libraries missing"; exit 1; fi
+            ~/.local/bin/flow-studio --selftest
+          '
+      - name: Record sizes
+        run: |
+          tgz=$(( $(stat -c %s flow-studio-linux-x86_64.tar.gz) / 1048576 ))
+          echo "tarball: ${tgz} MB, installed: $(du -sm ~/.local/share/flow-studio/app | cut -f1) MB" | tee -a "$GITHUB_STEP_SUMMARY"
+          find ~/.local/share/flow-studio/app -type f -size +20M -exec du -m {} + | sort -rn | head -25
+          # GitHub Releases rejects assets over 2 GiB.
+          if [ "$tgz" -ge 2048 ]; then echo "tarball is over the 2 GiB GitHub Releases limit"; exit 1; fi
+      - name: Publish to GitHub Releases
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Whichever workflow finishes first creates the release; the others upload into it.
+        run: |
+          gh release create "$GITHUB_REF_NAME" flow-studio-linux-x86_64.tar.gz --title "Flow Studio $GITHUB_REF_NAME" --generate-notes ||
+            gh release upload "$GITHUB_REF_NAME" flow-studio-linux-x86_64.tar.gz
