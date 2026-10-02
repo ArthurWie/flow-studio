@@ -1,40 +1,51 @@
-# Build the Flow Studio installer end-to-end.
-#   .\package.ps1
-# Requires: Inno Setup 6 (ISCC.exe on PATH or at the default location).
+# Build the Flow Studio installer end-to-end (CI runs this on windows-latest).
+#   .\package.ps1                    # windowed build → FlowStudioSetup.exe
+#   .\package.ps1 -Debug             # console build (shows startup errors — use when diagnosing)
+#   .\package.ps1 -Version 1.2.0
+# Needs: venv\ with requirements-win.lock + pyinstaller installed (see the release workflow),
+# and Inno Setup 6 (ISCC.exe on PATH or at a default location).
+param([switch]$Debug, [string]$Version = "1.0.0")
+
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
 $py   = Join-Path $root "venv\Scripts\python.exe"
-$stage = Join-Path $root "stage"
-$boot = "D:\FlowStudio-build\boot"
+$dist = Join-Path $root "dist\FlowStudio"
+Set-Location $root
 
-# 1. Build bootstrap.exe (stdlib-only, small, windowed for production)
-& $py -m PyInstaller (Join-Path $root "bootstrap.py") --onefile --noconsole `
-  --name bootstrap --icon (Join-Path $root "flow.ico") --noconfirm `
-  --distpath "$boot\dist" --workpath "$boot\build" --specpath $boot
+# 1. Freeze the app (onedir). No console unless -Debug.
+if ($Debug) { $env:FLOW_CONSOLE = "1" } else { Remove-Item Env:FLOW_CONSOLE -ErrorAction Ignore }
+& $py -m PyInstaller FlowStudio.spec --noconfirm --distpath dist --workpath build
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 
-# 2. Fetch latest uv.exe if not already present
-$uv = Join-Path $root "uv.exe"
-if (-not (Test-Path $uv)) {
-  $uvUrl = "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip"
-  $tmp = Join-Path $env:TEMP "uv.zip"
-  Invoke-WebRequest -Uri $uvUrl -OutFile $tmp
-  Expand-Archive -Path $tmp -DestinationPath $env:TEMP -Force
-  Copy-Item (Join-Path $env:TEMP "uv.exe") $uv -Force
+# 2. Bundle the default models as a Hugging Face cache next to the exe (flow_studio.py
+#    points HF_HOME there): Kokoro-82M + its voices, faster-whisper small.
+$env:HF_HOME = Join-Path $dist "models"
+& $py -c @"
+import faster_whisper
+from huggingface_hub import snapshot_download
+faster_whisper.download_model('small')
+snapshot_download('hexgrad/Kokoro-82M', allow_patterns=['config.json', 'kokoro-v1_0.pth', 'voices/*'])
+"@
+if ($LASTEXITCODE -ne 0) { throw "model download failed" }
+Remove-Item (Join-Path $env:HF_HOME "xet") -Recurse -Force -ErrorAction Ignore   # download-only chunk cache
+# The cache's snapshots\ files are symlinks into blobs\, and Inno follows symlinks, so
+# each model would ship twice (plus hub 1.x's shared hub\blobs\). Loading only reads
+# snapshots\ (huggingface_hub returns the snapshot file before it looks at blobs):
+# turn the links into real files, then drop the blob stores.
+$hub = Join-Path $env:HF_HOME "hub"
+foreach ($link in @(Get-ChildItem $hub -Recurse -File | Where-Object LinkType)) {
+  [IO.File]::Copy($link.FullName, "$($link.FullName).real")   # reads through the link
+  Remove-Item $link.FullName
+  Rename-Item "$($link.FullName).real" $link.Name
 }
+@(Get-ChildItem $hub -Recurse -Directory -Filter blobs) | Remove-Item -Recurse -Force
+Remove-Item Env:HF_HOME
 
-# 3. Stage everything the installer ships
-if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
-New-Item -ItemType Directory -Path $stage | Out-Null
-Copy-Item (Join-Path $root "flow_studio.py") $stage
-Copy-Item (Join-Path $root "app.py") $stage
-Copy-Item (Join-Path $root "flow.py") $stage
-Copy-Item (Join-Path $root "os_win.py") $stage
-Copy-Item (Join-Path $root "paths.py") $stage
-Copy-Item (Join-Path $root "flow.ico") $stage
-Copy-Item (Join-Path $root "requirements.txt") $stage
-Copy-Item "$boot\dist\bootstrap.exe" $stage
-Copy-Item $uv $stage
+# 3. WebView2 Evergreen bootstrapper; the installer runs it only when the runtime is missing.
+$wv2 = Join-Path $root "build\MicrosoftEdgeWebview2Setup.exe"
+if (-not (Test-Path $wv2)) {
+  Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile $wv2
+}
 
 # 4. Compile the installer with Inno Setup
 $isccCandidates = @(
@@ -44,7 +55,8 @@ $isccCandidates = @(
 )
 $iscc = $isccCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $iscc) { $iscc = "ISCC.exe" }
-& $iscc (Join-Path $root "FlowStudio.iss")
+& $iscc "/DAppVer=$Version" (Join-Path $root "FlowStudio.iss")
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
 
-Write-Host "`nBuilt: $(Join-Path $root 'FlowStudioSetup.exe')" -ForegroundColor Green
+$setup = Get-Item (Join-Path $root "FlowStudioSetup.exe")
+Write-Host ("`nBuilt: {0} ({1:N0} MB)" -f $setup.FullName, ($setup.Length / 1MB)) -ForegroundColor Green
