@@ -32,8 +32,10 @@ from paths import data_dir
 import model_manager as mm
 if sys.platform == "darwin":
     import os_mac as osi
+elif sys.platform == "win32":
+    import os_win as osi
 else:
-    import os_win as osi  # ponytail: os_linux joins here in phase 4
+    import os_linux as osi
 
 BASE_DIR = Path(__file__).resolve().parent
 # Writable data lives outside the (possibly read-only) install dir.
@@ -656,6 +658,13 @@ def api_start():
 def api_stop():
     do_stop()
     return jsonify(ok=True)
+
+
+@app.route("/api/toggle", methods=["POST"])
+def api_toggle():
+    """`flow-studio toggle`: what a desktop shortcut runs where the app can't grab keys (Wayland)."""
+    do_stop() if state["status"] == "recording" else do_start()
+    return jsonify(ok=True, status=state["status"])
 
 
 @app.route("/api/cancel", methods=["POST"])
@@ -1414,7 +1423,9 @@ async function tick(){
   } else {
     show('idle');
     $("idleError").textContent = s.error
-      || (s.hotkey_ok===false ? 'Global shortcut unavailable — use the mic button (try launching as administrator).' : '');
+      || (s.hotkey_ok===false ? (/Linux/.test(navigator.platform)
+          ? 'Global shortcut unavailable — bind “flow-studio toggle” to a desktop shortcut, or use the mic button.'
+          : 'Global shortcut unavailable — use the mic button (try launching as administrator).') : '');
   }
   lastStatus = s.status;
 }
