@@ -15,7 +15,8 @@ en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_
 # --- Dictation (flow.py) ---
 faster-whisper==1.2.1  # local ASR; pulls ctranslate2. Downloads the Whisper model on first use (~244 MB for small).
 sounddevice==0.5.5     # microphone capture
-keyboard==0.13.5       # ctrl+v paste into the focused app (hotkey itself uses Win32 RegisterHotKey)
+keyboard==0.13.5; sys_platform == "win32"  # ctrl+v paste into the focused app (hotkey itself uses Win32 RegisterHotKey)
+# macOS hotkey/paste (os_mac.py) use pyobjc AppKit + Quartz, which pywebview installs on the Mac.
 
 # --- Desktop shell (flow_studio.py) ---
 pywebview==6.2.1       # native WebView2 window; falls back to the browser if unavailable

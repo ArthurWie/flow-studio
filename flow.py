@@ -27,7 +27,10 @@ from pathlib import Path
 import numpy as np
 
 from paths import data_dir
-import os_win as osi  # ponytail: the only OS adapter so far; pick os_mac/os_linux here in phases 2/4
+if sys.platform == "darwin":
+    import os_mac as osi
+else:
+    import os_win as osi  # ponytail: os_linux joins here in phase 4
 
 BASE_DIR = Path(__file__).resolve().parent
 # Writable data lives outside the (possibly read-only) install dir.
@@ -237,6 +240,8 @@ def cleanup(raw):
 def type_text(text):
     try:
         osi.paste(text, state.get("target_hwnd") or 0)
+    except PermissionError:
+        raise  # the adapter's message tells the user how to fix it
     except Exception as exc:
         _dbg(f"type_text error: {exc}")
 
@@ -373,7 +378,13 @@ def _finalize(raw):
             state.update(status="cleaning", raw=raw)
         clean = cleanup(raw)
         app = state["app"]
-        type_text(clean)
+        try:
+            type_text(clean)
+        except PermissionError as exc:  # e.g. no Accessibility on macOS; text is on the clipboard
+            add_history(clean, app)
+            with _state_lock:
+                state.update(status="idle", clean=clean, error=str(exc))
+            return
         add_history(clean, app)
         with _state_lock:
             state.update(status="done", clean=clean)
@@ -942,8 +953,8 @@ function openHkCapture(){
   const modal = $("hkCapture"), prev = $("hkPreview");
   modal.style.display = 'flex'; prev.textContent = '…'; prev.style.color = '#1F1D1A';
   let done = false, peak = [];
-  const modsOf = e => { const m=[]; if(e.ctrlKey)m.push('ctrl'); if(e.altKey)m.push('alt'); if(e.shiftKey)m.push('shift'); if(e.metaKey)m.push('windows'); return m; };
-  const label = arr => arr.map(x=>({ctrl:'Ctrl',alt:'Alt',shift:'Shift',windows:'Win'}[x]||x.toUpperCase())).join(' + ');
+  const modsOf = e => { const m=[]; if(e.ctrlKey)m.push('ctrl'); if(e.altKey)m.push('alt'); if(e.shiftKey)m.push('shift'); if(e.metaKey)m.push(/Mac/.test(navigator.platform)?'cmd':'windows'); return m; };
+  const label = arr => arr.map(x=>({ctrl:'Ctrl',alt:'Alt',shift:'Shift',windows:'Win',cmd:'Cmd'}[x]||x.toUpperCase())).join(' + ');
   const normKey = e => { if(e.key===' '||e.code==='Space') return 'space';
     const m={ArrowUp:'up',ArrowDown:'down',ArrowLeft:'left',ArrowRight:'right',Enter:'enter',Tab:'tab',Backspace:'backspace',Delete:'delete'};
     return m[e.key] || e.key.toLowerCase(); };
@@ -1147,7 +1158,7 @@ let lastStatus=null;
 async function tick(){
   let s; try { s = await (await fetch('/api/state')).json(); } catch(e){ return; }
   window._state = s;
-  const hkFmt = (s.hotkey||'').split('+').map(x=>({ctrl:'Ctrl',alt:'Alt',shift:'Shift',windows:'Win',space:'Space'}[x]||x.toUpperCase())).join(' + ');
+  const hkFmt = (s.hotkey||'').split('+').map(x=>({ctrl:'Ctrl',alt:'Alt',shift:'Shift',windows:'Win',cmd:'Cmd',space:'Space'}[x]||x.toUpperCase())).join(' + ');
   const hh = $("hotkeyHint"); if(hh) hh.textContent = hkFmt || 'Ctrl + Shift + Space';
   curRow = s.whisper_row; $("modelName").textContent = s.whisper_row;
   const forced = s.language && s.language !== 'auto';
@@ -1193,7 +1204,8 @@ def selftest():
     # 1. imports
     try:
         import sounddevice  # noqa
-        import keyboard      # noqa
+        if sys.platform == "win32":
+            import keyboard  # noqa
         from faster_whisper import WhisperModel  # noqa
         print("  [ok] imports: sounddevice, keyboard, faster-whisper")
     except Exception as e:
@@ -1270,4 +1282,9 @@ if __name__ == "__main__":
     print(f"  Hotkey:  {settings['hotkey']} ({'active' if hotkey_ok else 'unavailable — use the mic button'})")
     print(f"  Cleanup: Ollama {settings['cleanup_model']} ({'up' if state['ollama_ok'] else 'offline → raw transcript'})\n")
     threading.Timer(1.2, lambda: webbrowser.open(url)).start()
-    app.run(host="127.0.0.1", port=7600, debug=False)
+    if sys.platform == "darwin":  # Carbon hotkey events need a Cocoa run loop on the main thread
+        from PyObjCTools import AppHelper
+        threading.Thread(target=app.run, kwargs=dict(host="127.0.0.1", port=7600), daemon=True).start()
+        AppHelper.runEventLoop(installInterrupt=True)
+    else:
+        app.run(host="127.0.0.1", port=7600, debug=False)
