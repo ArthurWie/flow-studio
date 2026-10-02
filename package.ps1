@@ -30,6 +30,7 @@ Copy-Item (Join-Path $root "flow_studio.py") $stage
 Copy-Item (Join-Path $root "app.py") $stage
 Copy-Item (Join-Path $root "flow.py") $stage
 Copy-Item (Join-Path $root "os_win.py") $stage
+Copy-Item (Join-Path $root "paths.py") $stage
 Copy-Item (Join-Path $root "flow.ico") $stage
 Copy-Item (Join-Path $root "requirements.txt") $stage
 Copy-Item "$boot\dist\bootstrap.exe" $stage
