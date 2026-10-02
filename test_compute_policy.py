@@ -16,6 +16,7 @@ def fake(monkeypatch):
     calls = {"devices": [], "threads": None, "fail": set()}
     torch = types.ModuleType("torch")
     torch.backends = types.SimpleNamespace(mps=types.SimpleNamespace(is_available=lambda: calls["mps"]))
+    torch.cuda = types.SimpleNamespace(is_available=lambda: calls.get("cuda", False))
     torch.set_num_threads = lambda n: calls.__setitem__("threads", n)
 
     def KPipeline(lang_code, device):
@@ -28,7 +29,19 @@ def fake(monkeypatch):
     monkeypatch.setitem(sys.modules, "kokoro", types.SimpleNamespace(KPipeline=KPipeline))
     monkeypatch.setattr(app, "_pipelines", {})
     monkeypatch.setattr(app, "_device", None)
+    monkeypatch.delenv("FLOW_GPU", raising=False)
     return calls
+
+
+def test_cuda_only_in_the_gpu_pack(fake, monkeypatch):
+    fake.update(mps=False, cuda=True)
+    assert app.get_pipeline("a") == "cpu"   # the CPU build never tries CUDA
+    monkeypatch.setattr(app, "_pipelines", {})
+    monkeypatch.setattr(app, "_device", None)
+    monkeypatch.setenv("FLOW_GPU", "1")
+    fake["threads"] = None
+    assert app.get_pipeline("a") == "cuda"
+    assert fake["threads"] is None
 
 
 def test_mps_when_available(fake):
