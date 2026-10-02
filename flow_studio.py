@@ -464,7 +464,9 @@ def main():
         overlay = webview.create_window(
             "Flow overlay", url=f"http://127.0.0.1:{FLOW_PORT}/overlay",
             width=OVERLAY_W, height=OVERLAY_H, frameless=True, on_top=True,
-            resizable=False, hidden=True, transparent=True, js_api=api)
+            resizable=False, hidden=True, transparent=True, js_api=api,
+            # Qt (Linux): easy_drag's app-wide Python event filter recurses in PySide6 6.9 → segfault
+            easy_drag=not sys.platform.startswith("linux"))
         if sys.platform == "darwin":
             _mac_dock(main_win)
             webview.start(lambda: _startup(main_win, overlay, api), icon=str(ICNS_PATH))
