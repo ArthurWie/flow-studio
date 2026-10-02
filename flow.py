@@ -23,6 +23,7 @@ import threading
 import time
 import urllib.request
 import webbrowser
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -164,9 +165,38 @@ def get_whisper(size):
     global _wmodel, _wsize
     if _wmodel is None or size != _wsize:
         from faster_whisper import WhisperModel
-        _wmodel = WhisperModel(size, device="cpu", compute_type="int8")
+        _wmodel = WhisperModel(whisper_path(size), device="cpu", compute_type="int8")
         _wsize = size
     return _wmodel
+
+
+@contextmanager
+def hf_online():
+    """Lift HF_HUB_OFFLINE for one user-started download (huggingface_hub reads it per request).
+    ponytail: process-wide flag, so a model load racing the download may check revisions too."""
+    from huggingface_hub import constants
+    was, constants.HF_HUB_OFFLINE = constants.HF_HUB_OFFLINE, False
+    try:
+        yield
+    finally:
+        constants.HF_HUB_OFFLINE = was
+
+
+def whisper_path(size):
+    """The model folder from the bundled cache (HF_HUB_CACHE) or the user cache (HF_HOME/hub),
+    with no network. Missing from both: download it into the user cache, since picking
+    a size in the model panel is a user-started download."""
+    from faster_whisper.utils import download_model
+    from huggingface_hub import constants
+    from huggingface_hub.errors import LocalEntryNotFoundError
+    user_cache = str(Path(constants.HF_HOME) / "hub")
+    for cache in (constants.HF_HUB_CACHE, user_cache):
+        try:
+            return download_model(size, local_files_only=True, cache_dir=cache)
+        except LocalEntryNotFoundError:
+            pass
+    with hf_online():
+        return download_model(size, cache_dir=user_cache)
 
 
 def transcribe_seg(model, audio, lang):
