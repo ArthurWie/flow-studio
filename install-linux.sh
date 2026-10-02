@@ -15,10 +15,12 @@ bin=$HOME/.local/bin
 # The window (Qt WebEngine, bundled) links a few desktop libraries the distro provides;
 # dictation loads PortAudio. Ask the dynamic linker what's missing, with the bundle's libs on the path.
 qt=$src/_internal/PySide6/Qt
-out=$(LD_LIBRARY_PATH="$src/_internal:$qt/lib" ldd "$src"/_internal/libpython3*.so* \
+out=$(LD_LIBRARY_PATH="$src/_internal:$qt/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ldd "$src"/_internal/libpython3*.so* \
   "$qt/plugins/platforms/libqxcb.so" "$qt/lib/libQt6WebEngineCore.so.6" "$qt/libexec/QtWebEngineProcess" 2>&1 || true)
-if grep -q "version .GLIBC_" <<<"$out"; then
-  echo "This Linux is too old for Flow Studio: it needs glibc $(grep -o 'GLIBC_[0-9.]*' <<<"$out" | sort -V | tail -1 | cut -d_ -f2) or newer (Ubuntu 24.04, Fedora 40 or later)."
+# PyInstaller bundles libraries from the build machine, so its glibc is the floor (glibc.txt, package-linux.sh).
+need=$(cat "$src/glibc.txt") have=$(getconf GNU_LIBC_VERSION | cut -d' ' -f2)
+if [ "$(printf '%s\n' "$need" "$have" | sort -V | head -1)" != "$need" ]; then
+  echo "This Linux is too old for Flow Studio: it needs glibc $need or newer (you have $have; Ubuntu 24.04 and Fedora 40 are new enough)."
   exit 1
 fi
 
@@ -69,9 +71,9 @@ echo "Missing system libraries: $missing"
 echo "Dictation needs PortAudio (libportaudio); the app window needs the others."
 echo "Install them with:"
 if command -v apt-get >/dev/null; then
-  echo "  sudo apt install $(for l in $missing; do apt_pkg "$l"; done | tr '\n' ' ')"
+  echo "  sudo apt install $(for l in $missing; do apt_pkg "$l"; done | xargs)"
 elif command -v dnf >/dev/null; then
-  echo "  sudo dnf install $(for l in $missing; do printf "'%s()(64bit)' " "$l"; done)"
+  echo "  sudo dnf install$(for l in $missing; do printf " '%s()(64bit)'" "$l"; done)"
 else
   echo "  your package manager's packages that provide these files"
 fi

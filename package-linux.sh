@@ -25,9 +25,10 @@ snapshot_download('hexgrad/Kokoro-82M', allow_patterns=['config.json', 'kokoro-v
 rm -rf "$HF_HOME/xet"   # download-only chunk cache
 unset HF_HOME
 
-# 3. The launcher icon and the install script.
+# 3. The launcher icon, the install script and the glibc it needs.
 "$py" -c "from PIL import Image; Image.open('flow.ico').save('$dist/flow.png')"
 cp install-linux.sh "$dist/"
+getconf GNU_LIBC_VERSION | cut -d' ' -f2 > "$dist/glibc.txt"   # bundled host libs need at least this
 
 # 4. Tarball with a flow-studio/ top folder.
 tar -C dist --transform 's,^FlowStudio,flow-studio,' -czf flow-studio-linux-x86_64.tar.gz FlowStudio
