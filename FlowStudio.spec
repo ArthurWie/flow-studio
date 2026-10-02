@@ -16,9 +16,10 @@ PACKAGES = ["torch", "kokoro", "misaki", "en_core_web_sm", "spacy", "thinc",
             "faster_whisper", "ctranslate2", "sounddevice", "soundfile", "av",
             "onnxruntime", "webview", "espeakng_loader", "phonemizer", "num2words",
             "language_tags", "pymupdf", "trafilatura", "justext"]
+# The version the app reports (gpu_pack.app_version): the GPU pack and the updater both go by it.
 VERSION = os.environ.get("FLOW_VERSION", "0.0.0")
 os.makedirs("build", exist_ok=True)
-with open("build/version.txt", "w") as f:   # updater.current() reads it; a dev run has none
+with open("build/version.txt", "w") as f:
     f.write(VERSION)
 datas, binaries, hidden = [("flow.ico", "."), ("flow.icns", "."), ("build/version.txt", ".")], [], []
 for pkg in PACKAGES:

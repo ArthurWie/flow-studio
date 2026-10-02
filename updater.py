@@ -17,6 +17,7 @@ import urllib.request
 from contextlib import suppress
 from pathlib import Path
 
+import gpu_pack
 from paths import data_dir
 
 RELEASES = "https://github.com/ArthurWie/flow-studio/releases"
@@ -26,7 +27,6 @@ MANIFEST_URL = RELEASES + "/latest/download/latest.json"
 PUBLIC_KEY = ""
 ASSET = {"win32": "FlowStudioSetup.exe", "darwin": "FlowStudio.dmg"}   # release file per OS
 DIR = data_dir() / "update"
-VERSION_FILE = Path(__file__).resolve().parent / "version.txt"   # written into the frozen app by FlowStudio.spec
 
 status = {"state": "idle"}   # idle | available | downloading | ready | installing | error, + version/done/total/error
 busy = lambda: False         # flow_studio sets this: True while dictating or speaking
@@ -93,10 +93,8 @@ def verify(public, msg, sig):
 # ── app side ──
 def current():
     """The running frozen app's version, or None in a dev run (no version.txt: never updates)."""
-    try:
-        return VERSION_FILE.read_text().strip()
-    except OSError:
-        return None
+    v = gpu_pack.app_version()
+    return None if v == "dev" else v
 
 
 def _v(version):
@@ -134,27 +132,11 @@ def check():
 
 
 def _download(asset):
-    """The verified file for the asset, resuming a partial download. Raises on a bad hash."""
+    """The verified file for the asset, resuming a partial download (gpu_pack's fetch). Raises on a bad hash."""
     DIR.mkdir(parents=True, exist_ok=True)
     final = DIR / f"{asset['sha256']}-{Path(asset['url']).name}"
-    if final.exists():
-        return final
-    part = DIR / f"{asset['sha256']}.part"
-    done = part.stat().st_size if part.exists() else 0
-    status.update(state="downloading", done=done, total=asset["size"])
-    if done < asset["size"]:
-        req = urllib.request.Request(asset["url"], headers={"Range": f"bytes={done}-"} if done else {})
-        with urllib.request.urlopen(req, timeout=30) as r, open(part, "ab" if r.status == 206 else "wb") as f:
-            status["done"] = done if r.status == 206 else 0   # 200: the server ignored Range, start over
-            while chunk := r.read(1 << 16):
-                f.write(chunk)
-                status["done"] += len(chunk)
-    with open(part, "rb") as f:
-        digest = hashlib.file_digest(f, "sha256").hexdigest()
-    if digest != asset["sha256"]:
-        part.unlink()
-        raise ValueError("the download doesn't match the signed SHA-256")
-    part.replace(final)
+    status.update(state="downloading", done=0, total=asset["size"])
+    gpu_pack._fetch(asset["url"], final, asset["size"], asset["sha256"], progress=status)
     return final
 
 

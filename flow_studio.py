@@ -30,6 +30,7 @@ ICON_PATH = BASE_DIR / "flow.ico"
 ICNS_PATH = BASE_DIR / "flow.icns"   # Dock icon on the Mac
 sys.path.insert(0, str(BASE_DIR))
 
+import gpu_pack
 from paths import data_dir
 
 if sys.argv[1:2] == ["toggle"]:  # before the heavy imports: a desktop shortcut runs this
@@ -42,9 +43,12 @@ if sys.argv[1:2] == ["toggle"]:  # before the heavy imports: a desktop shortcut 
 
 if getattr(sys, "frozen", False):
     # Windowed build: no console, so stdout/stderr are None and any print/tqdm would crash.
+    # The GPU pack's build (started by the CPU build, see gpu_pack.hand_off) logs separately.
     if sys.stdout is None or sys.stderr is None:
         data_dir().mkdir(parents=True, exist_ok=True)
-        sys.stdout = sys.stderr = open(data_dir() / "flow_studio.log", "w", encoding="utf-8", buffering=1)
+        log = "flow_studio_gpu.log" if os.environ.get("FLOW_GPU") else "flow_studio.log"
+        sys.stdout = sys.stderr = open(data_dir() / log, "w", encoding="utf-8", buffering=1)
+    gpu_pack.use_libs()
     # The installer ships the default models as a Hugging Face cache next to the exe (in
     # Contents/Resources/ of the Mac .app: Contents/MacOS/ may only hold code). They load
     # in place, read-only (no first-run copy); everything the hub writes (user downloads, xet,
@@ -87,18 +91,22 @@ def start_servers():
     threading.Thread(target=_serve, args=(flow.app, FLOW_PORT), daemon=True).start()
 
 
+def _answers(port):
+    try:
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=1).read(1)
+        return True
+    except Exception:
+        return False
+
+
 def wait_ready(timeout=25):
     """Block until both servers answer, so the iframes don't load too early."""
     deadline = time.time() + timeout
     for port in (TTS_PORT, FLOW_PORT):
-        while time.time() < deadline:
-            try:
-                urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=1).read(1)
-                break
-            except Exception:
-                time.sleep(0.25)
-        else:
-            return False
+        while not _answers(port):
+            if time.time() > deadline:
+                return False
+            time.sleep(0.25)
     return True
 
 
@@ -127,9 +135,11 @@ def selftest():
         with tempfile.TemporaryDirectory() as tmp:
             wav = Path(tmp) / "selftest.wav"
             sf.write(wav, audio, tts.SAMPLE_RATE)  # a file, so faster-whisper resamples 24 → 16 kHz
-            heard, _ = flow.transcribe_seg(flow.get_whisper("small"), str(wav), "en")
+            model = flow.get_whisper("small")
+            heard, _ = flow.transcribe_seg(model, str(wav), "en")
     except Exception as exc:
         return f"Whisper transcribe: {exc!r}"
+    print(f"  devices: TTS {tts._device}, Whisper {getattr(model.model, 'device', '?')}")
     score = difflib.SequenceMatcher(None, _words(SELFTEST_SENTENCE), _words(heard)).ratio()
     print(f"  heard {heard!r} (similarity {score:.2f})")
     if score < 0.8:
@@ -421,13 +431,12 @@ def main():
 
     # Single-instance guard: if the servers are already up (app already running),
     # don't try to bind the ports again — just open a window onto them.
-    already = False
-    try:
-        urllib.request.urlopen(f"http://127.0.0.1:{FLOW_PORT}/", timeout=1).read(1)
-        already = True
-    except Exception:
-        pass
+    already = _answers(FLOW_PORT)
     if not already:
+        gpu_pack.hand_off(lambda: _answers(TTS_PORT) and _answers(FLOW_PORT))   # exits if the pack runs
+        if os.environ.get("FLOW_GPU") and (broken := gpu_pack.check_cuda()):
+            print("GPU pack:", broken)
+            sys.exit(3)   # the CPU build that started this one carries on
         # Werkzeug swallows bind errors inside its server thread, so probe the ports first.
         for _port in (TTS_PORT, FLOW_PORT):
             with socket.socket() as _s:
@@ -440,6 +449,8 @@ def main():
         updater.busy = _busy
         if flow.settings["auto_update"]:   # off: no network request at launch
             threading.Thread(target=updater.check, daemon=True).start()
+        if gpu_pack.status()["state"] == "outdated" and not flow.settings["force_cpu"]:
+            gpu_pack.download()   # the app was updated: fetch the matching pack for the next start
     try:
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("FlowStudio.App")

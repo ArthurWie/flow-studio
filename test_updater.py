@@ -63,9 +63,8 @@ def release(tmp_path, monkeypatch):
     monkeypatch.setattr(updater, "MANIFEST_URL", base + "/latest.json")
     monkeypatch.setattr(updater, "PUBLIC_KEY", key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex())
     monkeypatch.setattr(updater, "DIR", tmp_path / "update")
-    monkeypatch.setattr(updater, "VERSION_FILE", tmp_path / "version.txt")
+    monkeypatch.setattr(updater.gpu_pack, "app_version", lambda: "1.0.0")
     monkeypatch.setattr(updater, "status", {"state": "idle"})
-    (tmp_path / "version.txt").write_text("1.0.0")
     applied = []
     monkeypatch.setattr(updater, "_apply", applied.append)
     _Range.ranges = []
@@ -117,7 +116,7 @@ def test_tampered_file_is_rejected(release):
     updater.check()
     updater.install()
     _wait("error")
-    assert "SHA-256" in updater.status["error"] and not applied
+    assert "checksum mismatch" in updater.status["error"] and not applied
     assert not list(updater.DIR.glob("*"))  # the bad bytes are gone, not resumed from
 
 
@@ -126,7 +125,7 @@ def test_partial_download_resumes_on_next_launch(release):
     data = (rel / "Setup.bin").read_bytes()
     sha = hashlib.sha256(data).hexdigest()
     updater.DIR.mkdir()
-    (updater.DIR / f"{sha}.part").write_bytes(data[:100_000])   # killed mid-download
+    (updater.DIR / f"{sha}-Setup.bin.part").write_bytes(data[:100_000])   # killed mid-download
     (updater.DIR / "old.part").write_bytes(b"stale")
     updater.check()                                             # next launch: resumes by itself
     _wait("installing")
@@ -137,6 +136,6 @@ def test_partial_download_resumes_on_next_launch(release):
 
 
 def test_no_check_in_a_dev_run(release, monkeypatch):
-    monkeypatch.setattr(updater, "VERSION_FILE", updater.DIR / "missing.txt")
+    monkeypatch.setattr(updater.gpu_pack, "app_version", lambda: "dev")
     updater.check()
     assert _Range.ranges == [] and updater.status["state"] == "idle"
