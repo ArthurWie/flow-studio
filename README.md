@@ -66,6 +66,22 @@ macOS grants the microphone and Accessibility permissions to the app that launch
 
 The frozen `.app` asks for these itself (its `Info.plist` carries `NSMicrophoneUsageDescription`, from `FlowStudio.spec`).
 
+### On Linux (dev runs)
+
+Install the desktop helpers from your distro: `xdotool` and `xclip` on X11 (also WSLg), `wl-clipboard` on Wayland, plus `ydotool` if you want Wayland to paste for you. Without a key-sending tool the text lands on the clipboard and Flow asks you to press Ctrl+V.
+
+On X11 the hotkey from Settings works as on Windows, hold-to-talk included. Wayland doesn't let apps grab keys, so bind the toggle command to a keyboard shortcut instead (it works on X11 too). Each run starts or stops dictation in the running app:
+
+```bash
+python3 /path/to/flow_studio.py toggle    # the packaged app: flow-studio toggle
+```
+
+- **GNOME:** Settings → Keyboard → View and Customize Shortcuts → Custom Shortcuts → **+**. Name it "Flow dictation", paste the command, set the shortcut.
+- **KDE Plasma 6:** System Settings → Keyboard → Shortcuts → **Add New** → **Command or Script…**, paste the command, then set the shortcut. (Plasma 5: System Settings → Shortcuts → Custom Shortcuts → Edit → New → Global Shortcut → Command/URL.)
+- **Cinnamon:** System Settings → Keyboard → Shortcuts → **Add custom shortcut**, paste the command, then click the keyboard-binding row and press the shortcut.
+
+On Wayland the app can't see which window is focused, so dictation pastes into whatever has focus when it finishes.
+
 ### Self-tests (no mic needed)
 
 ```powershell
