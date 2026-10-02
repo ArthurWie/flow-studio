@@ -10,12 +10,15 @@ no terminal — double-click the desktop shortcut.
 
   python flow_studio.py            → opens the app window
   pythonw flow_studio.py           → same, with no console window (used by the shortcut)
-  python flow_studio.py --selftest → starts both servers, checks them, exits (no window)
+  python flow_studio.py --selftest → starts both servers, runs a Kokoro → Whisper round trip, exits
 """
 
+import difflib
 import os
+import re
 import socket
 import sys
+import tempfile
 import threading
 import time
 import urllib.request
@@ -25,6 +28,17 @@ BASE_DIR = Path(__file__).resolve().parent
 ICON_PATH = BASE_DIR / "flow.ico"
 ICNS_PATH = BASE_DIR / "flow.icns"   # Dock icon on the Mac
 sys.path.insert(0, str(BASE_DIR))
+
+from paths import data_dir
+
+if getattr(sys, "frozen", False):
+    # Windowed build: no console, so stdout/stderr are None and any print/tqdm would crash.
+    if sys.stdout is None or sys.stderr is None:
+        data_dir().mkdir(parents=True, exist_ok=True)
+        sys.stdout = sys.stderr = open(data_dir() / "flow_studio.log", "w", encoding="utf-8", buffering=1)
+    # The installer ships the default models as a Hugging Face cache next to the exe.
+    # ponytail: user downloads land there too; #14 decides bundled-vs-user cache.
+    os.environ.setdefault("HF_HOME", str(Path(sys.executable).resolve().parent / "models"))
 
 import app as tts   # Kokoro TTS Studio  (Flask app on :7500)
 import flow         # Flow dictation      (Flask app on :7600)
@@ -68,6 +82,41 @@ def wait_ready(timeout=25):
         else:
             return False
     return True
+
+
+SELFTEST_SENTENCE = "The quick brown fox jumps over the lazy dog."
+
+
+def _words(text):
+    return re.findall(r"[a-z']+", text.lower())
+
+
+def selftest():
+    """Both servers answer, then a round trip on the bundled models: Kokoro speaks a fixed
+    sentence, Whisper small transcribes it, the text must fuzzy-match.
+    Returns None on success, else the step that broke and why."""
+    import numpy as np
+    import soundfile as sf
+    start_servers()
+    if not wait_ready():
+        return f"servers: :{TTS_PORT} / :{FLOW_PORT} didn't answer"
+    try:
+        audio = np.concatenate([np.asarray(r.audio, dtype=np.float32)
+                                for r in tts.get_pipeline("a")(SELFTEST_SENTENCE, voice="af_heart")])
+    except Exception as exc:
+        return f"Kokoro TTS: {exc!r}"
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            wav = Path(tmp) / "selftest.wav"
+            sf.write(wav, audio, tts.SAMPLE_RATE)  # a file, so faster-whisper resamples 24 → 16 kHz
+            heard, _ = flow.transcribe_seg(flow.get_whisper("small"), str(wav), "en")
+    except Exception as exc:
+        return f"Whisper transcribe: {exc!r}"
+    score = difflib.SequenceMatcher(None, _words(SELFTEST_SENTENCE), _words(heard)).ratio()
+    print(f"  heard {heard!r} (similarity {score:.2f})")
+    if score < 0.8:
+        return f"match: expected {SELFTEST_SENTENCE!r}, heard {heard!r}"
+    return None
 
 
 SHELL_HTML = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
@@ -341,12 +390,9 @@ def main():
     except Exception:
         pass
     if "--selftest" in sys.argv:
-        start_servers()
-        ok = wait_ready()
-        print("both servers up:", ok)
-        print(f"  dictation → http://127.0.0.1:{FLOW_PORT}")
-        print(f"  tts       → http://127.0.0.1:{TTS_PORT}")
-        sys.exit(0 if ok else 1)
+        broken = selftest()
+        print("selftest:", f"FAIL at {broken}" if broken else "PASS")
+        sys.exit(1 if broken else 0)
 
     # Single-instance guard: if the servers are already up (app already running),
     # don't try to bind the ports again — just open a window onto them.

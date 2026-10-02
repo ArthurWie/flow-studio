@@ -16,6 +16,8 @@ UI is a faithful build of the "Flow" design mockup (cream / ink / orange).
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -93,6 +95,7 @@ state = {
     "error": "",
     "started": 0.0,
     "ollama_ok": None,
+    "ollama_setup": None,   # None | "running" | "done" | "error: …"
     "hotkey_ok": None,
 }
 
@@ -204,6 +207,42 @@ def ollama_models():
 
 def ollama_up():
     return ollama_models() is not None
+
+
+OLLAMA_INSTALLER_URL = "https://ollama.com/download/OllamaSetup.exe"
+
+
+def ollama_exe():
+    found = shutil.which("ollama")
+    if found:
+        return found
+    cand = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama" / "ollama.exe"
+    return str(cand) if cand.exists() else "ollama"
+
+
+def setup_ollama():
+    """Optional cleanup setup, started from the dashboard: install Ollama if it's missing
+    (only a validly signed installer is run), then pull the cleanup model.
+    Progress lands in state["ollama_setup"]; failure is non-fatal (raw transcripts)."""
+    state["ollama_setup"] = "running"
+    no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        if not ollama_up() and not shutil.which("ollama"):
+            if sys.platform != "win32":
+                raise RuntimeError("automatic Ollama install is Windows-only for now; install it from ollama.com")
+            dest = DATA_DIR / "OllamaSetup.exe"
+            with urllib.request.urlopen(OLLAMA_INSTALLER_URL, timeout=60) as r, open(dest, "wb") as f:
+                shutil.copyfileobj(r, f)
+            if not osi.signature_ok(dest):
+                dest.unlink(missing_ok=True)
+                raise RuntimeError("the downloaded Ollama installer failed signature verification; not running it")
+            subprocess.run([str(dest), "/SILENT"], check=True)  # its own installer UI may show
+        subprocess.run([ollama_exe(), "pull", "qwen2.5:3b"], check=True, creationflags=no_window)
+        state["ollama_ok"] = ollama_up()
+        resolve_cleanup_model()
+        state["ollama_setup"] = "done"
+    except Exception as exc:
+        state["ollama_setup"] = f"error: {exc}"
 
 
 def resolve_cleanup_model():
@@ -636,6 +675,14 @@ def api_mic():
 def api_ollama_models():
     return jsonify(models=[n for n, _ in (ollama_models() or [])],
                    current=settings["cleanup_model"])
+
+
+@app.route("/api/ollama_setup", methods=["POST"])
+def api_ollama_setup():
+    if state["ollama_setup"] != "running":
+        state["ollama_setup"] = "running"   # before the thread starts, so a double click can't race
+        threading.Thread(target=setup_ollama, daemon=True).start()
+    return jsonify(ok=True)
 
 
 @app.route("/api/cleanup_model", methods=["POST"])
@@ -1182,8 +1229,13 @@ async function tick(){
   $("engineLine").innerHTML = `local · <span id="langPill" title="Click to pin the language (auto / en / de)" style="cursor:pointer; border-bottom:1px dotted #B0A896; padding-bottom:1px;">${lang}${forced ? '' : ' 🔍'}</span> · cleanup: ${s.cleanup_model}`;
   $("langPill").onclick = async (e) => { e.stopPropagation(); await post('/api/language'); tick(); };
   $("totalWords").textContent = (s.total_words||0).toLocaleString();
-  $("ollamaState").innerHTML = s.ollama_ok===false
+  const setup = s.ollama_setup || '';
+  $("ollamaState").innerHTML = setup==='running'
+     ? `<span style="color:#8A8378;">setting up Ollama…</span>`
+     : s.ollama_ok===false
      ? `<span style="color:#B0563C;">Ollama offline</span><br><span style="color:#8A8378;">raw transcript used</span>`
+       + (setup.startsWith('error') ? `<br><span style="color:#B0563C;">${setup.replace(/</g,'&lt;')}</span>` : '')
+       + `<br><a href="#" onclick="post('/api/ollama_setup');return false;" style="color:#E8912D;">set up cleanup</a>`
      : `<span style="color:#2E7D43;">●</span> ${s.cleanup_model}`;
   renderHistory(s.history||[]);
 

@@ -4,6 +4,7 @@ Windows adapter for Flow's OS seam (see issue #4). Same interface on every OS:
   hotkey(spec, on_press, on_release) → bool   register/re-register the global hotkey
   paste(text, handle)                          type text into the window `handle`
   foreground() → (handle, app_name)            the window focused right now
+  signature_ok(path) → bool                    a downloaded installer is validly signed
 
 Everything Win32 / ctypes lives here so flow.py stays portable.
 """
@@ -201,3 +202,19 @@ def _hotkey_loop():
             _callbacks[1]()
 
         time.sleep(0.015)
+
+
+# ── downloaded installers ───────────────────────────────────────────────────
+def signature_ok(path):
+    """True only if the file has a Valid Authenticode signature."""
+    import os
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "(Get-AuthenticodeSignature -LiteralPath $env:FLOW_SIG_PATH).Status"],
+            env={**os.environ, "FLOW_SIG_PATH": str(path)}, capture_output=True, text=True,
+            timeout=30, creationflags=0x08000000).stdout.strip()  # CREATE_NO_WINDOW
+        return out == "Valid"
+    except Exception:
+        return False
