@@ -1,6 +1,7 @@
 name: release
 # Frozen Windows build → selftest with the network blocked → Inno installer.
-# A `v*` tag publishes the installer to GitHub Releases; PRs touching the build only check it.
+# A `v*` tag publishes the installer to GitHub Releases; PRs touching the build files only check it.
+# Other changes (e.g. flow_studio.py) build on demand: gh workflow run release --ref <branch>
 on:
   push:
     tags: ["v*"]
@@ -11,7 +12,6 @@ on:
       - FlowStudio.iss
       - package.ps1
       - requirements-win.lock
-      - flow_studio.py
       - .github/workflows/release.yml
 permissions:
   contents: write
