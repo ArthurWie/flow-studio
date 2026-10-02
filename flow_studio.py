@@ -23,6 +23,7 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 ICON_PATH = BASE_DIR / "flow.ico"
+ICNS_PATH = BASE_DIR / "flow.icns"   # Dock icon on the Mac
 sys.path.insert(0, str(BASE_DIR))
 
 import app as tts   # Kokoro TTS Studio  (Flask app on :7500)
@@ -152,12 +153,10 @@ def _overlay_noactivate(hwnd):
         pass
 
 
-def _overlay_controller(overlay, api):
-    """Show the floating bar while dictating/processing; hide it when idle —
-    showing WITHOUT activating it, so focus stays in the user's text field."""
+def _win_overlay(overlay, api):
+    """(show, hide) for the overlay on Windows: a no-activate topmost tool window."""
     import ctypes
     import webview
-    time.sleep(0.8)
     try:
         scr = webview.screens[0]
         overlay.move(int((scr.width - OVERLAY_W) / 2), int(scr.height - OVERLAY_H - 20))
@@ -169,6 +168,8 @@ def _overlay_controller(overlay, api):
         if hwnd:
             break
         time.sleep(0.15)
+    if not hwnd:             # fallback if we couldn't get the handle
+        return overlay.show, overlay.hide
     _overlay_noactivate(hwnd)
     api.hwnd = hwnd          # let the JS drag bridge move this window
     u = ctypes.windll.user32
@@ -179,29 +180,66 @@ def _overlay_controller(overlay, api):
     SWP = 0x0010 | 0x0040 | 0x0002 | 0x0001  # NOACTIVATE | SHOWWINDOW | NOMOVE | NOSIZE
     SW_HIDE = 0
 
-    def hide():
-        if hwnd:
-            u.ShowWindow(hwnd, SW_HIDE)
-
     def show():
-        if hwnd:
-            u.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP)  # show topmost, no activate
+        u.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP)  # show topmost, no activate
 
+    return show, lambda: u.ShowWindow(hwnd, SW_HIDE)
+
+
+def _mac_overlay(overlay):
+    """(show, hide) for the overlay on the Mac. The overlay's web view moves into a
+    borderless non-activating NSPanel: it floats over every app and Space and takes
+    clicks (pywebview's easy_drag moves it) without activating Flow Studio, so focus
+    stays in the user's text field. pywebview's own window for it is never shown."""
+    import AppKit
+    from PyObjCTools import AppHelper
+    overlay.events.loaded.wait(15)
+    built, box = threading.Event(), {}
+
+    def build():  # AppKit wants the main thread
+        try:
+            scr = AppKit.NSScreen.mainScreen().visibleFrame()
+            rect = AppKit.NSMakeRect(scr.origin.x + (scr.size.width - OVERLAY_W) / 2,
+                                     scr.origin.y + 20, OVERLAY_W, OVERLAY_H)
+            p = AppKit.NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+                rect, AppKit.NSWindowStyleMaskBorderless | AppKit.NSWindowStyleMaskNonactivatingPanel,
+                AppKit.NSBackingStoreBuffered, False)
+            p.setLevel_(AppKit.NSStatusWindowLevel)
+            p.setCollectionBehavior_(AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces
+                                     | AppKit.NSWindowCollectionBehaviorFullScreenAuxiliary)
+            p.setHidesOnDeactivate_(False)  # Flow Studio is almost never the active app
+            p.setOpaque_(False)
+            p.setHasShadow_(False)
+            p.setBackgroundColor_(AppKit.NSColor.clearColor())
+            p.setContentView_(overlay.native.contentView())
+            box["panel"] = p
+        finally:
+            built.set()
+
+    AppHelper.callAfter(build)
+    built.wait(5)
+    p = box.get("panel")
+    if not p:  # no overlay beats one that steals focus on every show
+        print("[!] Couldn't build the dictation overlay panel.")
+        return (lambda: None), (lambda: None)
+    return (lambda: AppHelper.callAfter(p.orderFrontRegardless),
+            lambda: AppHelper.callAfter(p.orderOut_, None))
+
+
+def _overlay_controller(overlay, api):
+    """Show the floating bar while dictating/processing; hide it when idle —
+    showing WITHOUT activating it, so focus stays in the user's text field."""
+    time.sleep(0.8)
+    show, hide = _mac_overlay(overlay) if sys.platform == "darwin" else _win_overlay(overlay, api)
     hide()  # start hidden
     shown = False
     while True:
         active = flow.state.get("status") in ("recording", "transcribing", "cleaning")
         try:
-            if hwnd:
-                if active and not shown:
-                    show(); shown = True
-                elif not active and shown:
-                    hide(); shown = False
-            else:  # fallback if we couldn't get the handle
-                if active and not shown:
-                    overlay.show(); shown = True
-                elif not active and shown:
-                    overlay.hide(); shown = False
+            if active and not shown:
+                show(); shown = True
+            elif not active and shown:
+                hide(); shown = False
         except Exception:
             pass
         time.sleep(0.2)
@@ -258,17 +296,42 @@ def _run_tray(win):
     pystray.Icon("flow_studio", Image.open(ICON_PATH), "Flow Studio", menu).run()
 
 
+def _mac_dock(main_win):
+    """Mac Dock behavior (no tray: pystray and pywebview both need the main thread):
+    clicking the Dock icon reopens the hidden window; Cmd+Q, or Quit in the Dock
+    menu, exits for real. Call before webview.start(): pywebview builds its app
+    delegate from BrowserView.AppDelegate when it makes the first window."""
+    import objc
+    from webview.platforms.cocoa import BrowserView
+
+    class FlowAppDelegate(BrowserView.AppDelegate):
+        def applicationShouldTerminate_(self, app):
+            # pywebview would ask each window's `closing` handler, which only hides
+            os._exit(0)   # ponytail: hard exit, like the Windows tray's Quit
+
+        @objc.typedSelector(b"Z@:@Z")
+        def applicationShouldHandleReopen_hasVisibleWindows_(self, app, visible):
+            main_win.show()
+            return True
+
+    BrowserView.AppDelegate = FlowAppDelegate
+
+
 def _startup(main_win, overlay, api):
-    """Runs once after the GUI is up: set the icon, send the close button to the
-    tray (Flow keeps dictating in the background), then run the overlay loop."""
-    _set_window_icon(main_win)
+    """Runs once after the GUI is up: set the icon, make the close button hide the
+    window (Flow keeps dictating in the background; quit from the tray or with
+    Cmd+Q), then run the overlay loop."""
+    mac = sys.platform == "darwin"
+    if not mac:
+        _set_window_icon(main_win)
 
     def _hide_to_tray():
         main_win.hide()
-        return False   # cancel the close — quit only from the tray menu
+        return False   # cancel the close
 
     main_win.events.closing += _hide_to_tray
-    threading.Thread(target=_run_tray, args=(main_win,), daemon=True).start()
+    if not mac:
+        threading.Thread(target=_run_tray, args=(main_win,), daemon=True).start()
     _overlay_controller(overlay, api)
 
 
@@ -317,7 +380,11 @@ def main():
             "Flow overlay", url=f"http://127.0.0.1:{FLOW_PORT}/overlay",
             width=OVERLAY_W, height=OVERLAY_H, frameless=True, on_top=True,
             resizable=False, hidden=True, transparent=True, js_api=api)
-        webview.start(lambda: _startup(main_win, overlay, api))
+        if sys.platform == "darwin":
+            _mac_dock(main_win)
+            webview.start(lambda: _startup(main_win, overlay, api), icon=str(ICNS_PATH))
+        else:
+            webview.start(lambda: _startup(main_win, overlay, api))
     except Exception as exc:
         # No native window available → fall back to the default browser.
         import webbrowser
