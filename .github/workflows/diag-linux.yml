@@ -1,0 +1,25 @@
+name: diag-linux
+# TEMPORARY (#20): find the segfault when the Qt window opens under Xvfb. Delete before merge.
+on:
+  pull_request:
+    paths: [.github/workflows/diag-linux.yml]
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      - run: |
+          uv venv --python 3.12 venv
+          uv pip install --python venv/bin/python --torch-backend cpu -r requirements-linux.lock
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libportaudio2 libegl1 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-shape0 libxcb-util1 libxcb-xkb1 libxkbcommon-x11-0 xvfb gdb
+      - name: gdb backtrace
+        run: |
+          timeout 90 xvfb-run -a gdb -batch -ex run -ex "thread apply all bt 25" -ex "py-bt" --args venv/bin/python -X faulthandler flow_studio.py > gdb.log 2>&1 || true
+          grep -v "GET \|POST " gdb.log | tail -250
+      - name: sandbox off
+        run: |
+          QTWEBENGINE_DISABLE_SANDBOX=1 timeout 60 xvfb-run -a venv/bin/python -X faulthandler flow_studio.py > a.log 2>&1; echo "exit=$?"
+          grep -v "GET \|POST " a.log | tail -60
