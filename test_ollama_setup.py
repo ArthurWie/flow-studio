@@ -3,6 +3,8 @@ import io
 from pathlib import Path
 
 import flow
+import os_mac
+import os_win
 
 
 def _fake_install(monkeypatch, signed):
@@ -11,7 +13,8 @@ def _fake_install(monkeypatch, signed):
     monkeypatch.setattr(flow, "ollama_up", lambda: False)
     monkeypatch.setattr(flow.shutil, "which", lambda n: None)
     monkeypatch.setattr(flow.urllib.request, "urlopen", lambda *a, **k: io.BytesIO(b"MZ"))
-    monkeypatch.setattr(flow.osi, "signature_ok", lambda p: signed)
+    monkeypatch.setattr(flow, "osi", os_win)
+    monkeypatch.setattr(os_win, "signature_ok", lambda p: signed)
     monkeypatch.setattr(flow.subprocess, "run", lambda cmd, **k: ran.append(cmd))
     monkeypatch.setattr(flow, "resolve_cleanup_model", lambda: None)
     flow.setup_ollama()
@@ -33,9 +36,9 @@ def test_signed_installer_runs_then_pulls(monkeypatch):
 def test_signature_ok_reads_powershell_status(monkeypatch):
     class R: stdout = "Valid\n"
     monkeypatch.setattr("subprocess.run", lambda *a, **k: R())
-    assert flow.osi.signature_ok("x.exe") is True
+    assert os_win.signature_ok("x.exe") is True
     R.stdout = "NotSigned\n"
-    assert flow.osi.signature_ok("x.exe") is False
+    assert os_win.signature_ok("x.exe") is False
 
 
 def _fake_mac_install(monkeypatch, tmp_path, signed):
@@ -46,7 +49,8 @@ def _fake_mac_install(monkeypatch, tmp_path, signed):
     monkeypatch.setattr(flow, "ollama_up", lambda: bool(up))
     monkeypatch.setattr(flow, "ollama_exe", lambda: "ollama")
     monkeypatch.setattr(flow.urllib.request, "urlopen", lambda *a, **k: io.BytesIO(b"PK"))
-    monkeypatch.setattr(flow.osi, "signature_ok", lambda p: signed and p.name == "Ollama.app")
+    monkeypatch.setattr(flow, "osi", os_mac)
+    monkeypatch.setattr(os_mac, "signature_ok", lambda p: signed and p.name == "Ollama.app")
     monkeypatch.setattr(flow.time, "sleep", lambda s: None)
     monkeypatch.setattr(flow, "resolve_cleanup_model", lambda: None)
 
