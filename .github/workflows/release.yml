@@ -3,12 +3,17 @@ name: release
 # Windows also builds the GPU pack (CUDA build, gpu_pack.py) and selftests it from its install folders.
 # A `v*` tag publishes both to GitHub Releases, then the updater's signed latest.json;
 # PRs touching the build files only check Windows.
-# macOS runs only on tags and workflow_dispatch: its minutes count 10x on a private repo.
+# macOS runs only on tags, or on workflow_dispatch with the macos box ticked: its minutes count 10x on a private repo.
 # Other changes (e.g. flow_studio.py) build on demand: gh workflow run release --ref <branch>
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      macos:
+        description: Also build macOS (minutes count 10x)
+        type: boolean
+        default: false
   pull_request:
     paths:
       - FlowStudio.spec
@@ -110,6 +115,13 @@ jobs:
           if (-not $m.failed) { throw "the launcher didn't record the failed GPU start" }
           "pack.json failed: $($m.failed)"
           Stop-Process -Name FlowStudio -Force
+      - name: Keep the installer (manual runs)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v7
+        with:
+          name: FlowStudioSetup
+          path: FlowStudioSetup.exe
+          retention-days: 7
       - name: Publish to GitHub Releases
         if: github.ref_type == 'tag'
         env:
@@ -120,7 +132,7 @@ jobs:
           gh release create $env:GITHUB_REF_NAME @assets --title "Flow Studio $env:GITHUB_REF_NAME" --generate-notes
           if ($LASTEXITCODE) { gh release upload $env:GITHUB_REF_NAME @assets }
   macos:
-    if: github.event_name != 'pull_request'
+    if: github.ref_type == 'tag' || inputs.macos
     runs-on: macos-14   # arm64
     timeout-minutes: 90
     steps:
