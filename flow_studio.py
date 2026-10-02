@@ -36,9 +36,12 @@ if getattr(sys, "frozen", False):
     if sys.stdout is None or sys.stderr is None:
         data_dir().mkdir(parents=True, exist_ok=True)
         sys.stdout = sys.stderr = open(data_dir() / "flow_studio.log", "w", encoding="utf-8", buffering=1)
-    # The installer ships the default models as a Hugging Face cache next to the exe.
+    # The installer ships the default models as a Hugging Face cache next to the exe
+    # (in Contents/Resources/ of the Mac .app: Contents/MacOS/ may only hold code).
     # ponytail: user downloads land there too; #14 decides bundled-vs-user cache.
-    os.environ.setdefault("HF_HOME", str(Path(sys.executable).resolve().parent / "models"))
+    _exe_dir = Path(sys.executable).resolve().parent
+    os.environ.setdefault("HF_HOME", str(_exe_dir.parent / "Resources" / "models" if sys.platform == "darwin"
+                                         else _exe_dir / "models"))
 
 import app as tts   # Kokoro TTS Studio  (Flask app on :7500)
 import flow         # Flow dictation      (Flask app on :7600)

@@ -4,6 +4,7 @@ macOS adapter for Flow's OS seam (see issue #4). Same interface as os_win.py:
   hotkey(spec, on_press, on_release) → bool   register/re-register the global hotkey
   paste(text, handle)                          type text into the app `handle` (a pid)
   foreground() → (handle, app_name)            the app focused right now
+  signature_ok(path) → bool                    a downloaded app is validly signed
 
 The hotkey uses Carbon RegisterEventHotKey: it reports press and release and needs
 no Input Monitoring permission. Its events arrive on the main thread's Cocoa run
@@ -188,3 +189,15 @@ def hotkey(spec, on_press, on_release):
     AppHelper.callAfter(run)  # Carbon wants the main thread
     done.wait(5.0)  # ponytail: reports False if the main run loop isn't up within 5 s
     return out[0]
+
+
+# ── downloaded-app check ────────────────────────────────────────────────────
+def signature_ok(path):
+    """True only if the app's signature is intact and chains to Apple (a Developer ID;
+    ad-hoc and self-signed fail): the codesign counterpart of os_win's Authenticode check."""
+    import subprocess
+    try:
+        return subprocess.run(["codesign", "--verify", "--deep", "--strict", "-R=anchor apple generic", str(path)],
+                              capture_output=True, timeout=120).returncode == 0
+    except Exception:
+        return False

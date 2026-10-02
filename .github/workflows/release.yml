@@ -1,6 +1,7 @@
 name: release
-# Frozen Windows build → selftest with the network blocked → Inno installer.
-# A `v*` tag publishes the installer to GitHub Releases; PRs touching the build files only check it.
+# Frozen builds → selftest with the network blocked → Inno installer (Windows) / .dmg (macOS).
+# A `v*` tag publishes both to GitHub Releases; PRs touching the build files only check Windows.
+# macOS runs only on tags and workflow_dispatch: its minutes count 10x on a private repo.
 # Other changes (e.g. flow_studio.py) build on demand: gh workflow run release --ref <branch>
 on:
   push:
@@ -59,4 +60,49 @@ jobs:
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create $env:GITHUB_REF_NAME FlowStudioSetup.exe --title "Flow Studio $env:GITHUB_REF_NAME" --generate-notes
+        # Whichever OS finishes first creates the release; the other uploads into it.
+        run: |
+          gh release create $env:GITHUB_REF_NAME FlowStudioSetup.exe --title "Flow Studio $env:GITHUB_REF_NAME" --generate-notes
+          if ($LASTEXITCODE) { gh release upload $env:GITHUB_REF_NAME FlowStudioSetup.exe }
+  macos:
+    if: github.event_name != 'pull_request'
+    runs-on: macos-14   # arm64
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      - name: Install pinned dependencies
+        run: |
+          uv venv --python 3.12 venv
+          uv pip install --python venv/bin/python -r requirements-mac.lock pyinstaller==6.22.3
+      - name: Build .dmg
+        run: ./package.sh "$([ "$GITHUB_REF_TYPE" = tag ] && echo "${GITHUB_REF_NAME#v}" || echo 0.0.0)"
+      - name: Install from the .dmg
+        run: |
+          hdiutil attach FlowStudio.dmg -nobrowse -mountpoint /Volumes/FlowStudio
+          ditto "/Volumes/FlowStudio/Flow Studio.app" "/Applications/Flow Studio.app"
+          hdiutil detach /Volumes/FlowStudio
+          codesign --verify --deep --strict "/Applications/Flow Studio.app"
+      - name: Selftest with the network blocked
+        timeout-minutes: 15
+        run: |
+          # Outbound block for the app only (loopback stays open for its own servers).
+          offline='(version 1)(allow default)(deny network-outbound (remote ip "*:*"))(allow network-outbound (remote ip "localhost:*"))'
+          if sandbox-exec -p "$offline" curl -sS --max-time 10 -o /dev/null https://huggingface.co; then
+            echo "network block isn't working"; exit 1
+          fi
+          sandbox-exec -p "$offline" "/Applications/Flow Studio.app/Contents/MacOS/FlowStudio" --selftest
+      - name: Record sizes
+        run: |
+          dmg=$(( $(stat -f %z FlowStudio.dmg) / 1048576 ))
+          echo "dmg: ${dmg} MB, installed: $(du -sm "/Applications/Flow Studio.app" | cut -f1) MB" | tee -a "$GITHUB_STEP_SUMMARY"
+          find "/Applications/Flow Studio.app" -type f -size +20M -exec du -m {} + | sort -rn | head -25
+          # GitHub Releases rejects assets over 2 GiB.
+          if [ "$dmg" -ge 2048 ]; then echo "dmg is over the 2 GiB GitHub Releases limit"; exit 1; fi
+      - name: Publish to GitHub Releases
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" FlowStudio.dmg --title "Flow Studio $GITHUB_REF_NAME" --generate-notes ||
+            gh release upload "$GITHUB_REF_NAME" FlowStudio.dmg
