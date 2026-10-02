@@ -5,7 +5,7 @@ A local, offline desktop app bundling two tools in one window:
 - **Dictation** — press a hotkey anywhere, speak, and cleaned-up text is typed into whatever app you're in. Speech → text via [faster-whisper](https://github.com/SYSTRAN/faster-whisper), filler-word/punctuation cleanup via a local LLM.
 - **Text to Speech** — the [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) model with streaming playback, word-level highlighting, voice blending, and MP3 export.
 
-Everything runs on your machine. After the first model download, nothing leaves your PC.
+Everything runs on your machine; your text and audio never leave it. The network is used only for the update check at launch (you can turn it off) and for what you ask for: an update, a model download, the Ollama setup, a URL you paste.
 
 > **Platform: Windows only.** The dictation tool uses Win32 APIs (global hotkey, clipboard, focus) via `ctypes.windll` and the desktop shell uses Edge WebView2. The TTS tool (`app.py`) alone is cross-platform, but the bundled app is not.
 
@@ -17,6 +17,8 @@ Everything runs on your machine. After the first model download, nothing leaves 
    On an Apple-silicon Mac (macOS 14+): download **FlowStudio.dmg**, drag **Flow Studio** to Applications. It's signed ad-hoc only (not notarized), so the first launch is blocked: System Settings → Privacy & Security → **Open Anyway**. It asks for the microphone on the first dictation and for Accessibility on the first paste.
 2. Launch **Flow Studio**. Everything ships in the installer — the engine and the default models (Kokoro-82M, Whisper `small`) — so there's no setup step and no download.
 3. Optionally click **set up cleanup** in the dictation dashboard's Cleanup card — it installs Ollama (only if its installer — on the Mac, its app — is validly signed) and pulls `qwen2.5:3b`. Dictation works without it (it just types the raw transcript).
+
+**Updates:** at launch the app asks GitHub Releases whether there's a newer version (Settings → General → *Check for updates* turns that off). If there is, the dashboard shows **Install**; it downloads with progress (an interrupted download resumes at the next launch), checks the release's ed25519 signature and the file's SHA-256, waits until no dictation or speech is running, then installs silently and restarts. On the Mac it swaps the `.app` in place, so it needs write access to the folder the app is in.
 
 Installing over an older Flow Studio upgrades it in place: the old `env\` folder is removed; history, pronunciations and settings in `%LOCALAPPDATA%\FlowStudio` are kept. The installer adds the **WebView2 Runtime** if it's missing (preinstalled on Windows 11).
 
@@ -91,6 +93,8 @@ CI builds the installer ([`.github/workflows/release.yml`](.github/workflows/rel
 
 A second job does the same on `macos-14` (arm64) with `requirements-mac.lock` and `package.sh` → **`FlowStudio.dmg`**; the selftest runs under `sandbox-exec` with outbound network denied except loopback. It runs only on `v*` tags and `gh workflow run release --ref <branch>`, never on PRs: Mac minutes count 10× on a private repo. Locally on the Mac: same two `uv` lines with `requirements-mac.lock` and `venv/bin/python`, then `./package.sh`. The `.dmg` is ad-hoc signed; the Developer ID + notarization steps for a public release are in `package.sh`'s header.
 
+A last job, on tags only, downloads both installers from the release, writes **`latest.json`** (version, URL, SHA-256 and size per OS) and signs it with the `UPDATE_SIGNING_KEY` repo secret (`latest.json.sig`); the app verifies it against the public key in `updater.py`. Make the key pair once with `uv run --with cryptography python updater.py keygen`.
+
 Locally, on Windows:
 
 ```powershell
@@ -142,4 +146,6 @@ All processing is local. Files are written to `%LOCALAPPDATA%\FlowStudio\` (Wind
 
 - `flow_studio.log` — console output of the installed (windowed) app.
 
-No telemetry. The default models ship in the installer; the network is used only for models you choose to download, the optional Ollama setup, and URLs you paste into the TTS tool.
+- `update/` — a downloaded update, deleted after it's installed.
+
+No telemetry. The default models ship in the installer. The network is used for the update check at launch (two small files from GitHub Releases; turn it off under Settings → General → *Check for updates*), an update you choose to install, models you choose to download, the optional Ollama setup, and URLs you paste into the TTS tool.

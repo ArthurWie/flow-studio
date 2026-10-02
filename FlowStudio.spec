@@ -16,7 +16,11 @@ PACKAGES = ["torch", "kokoro", "misaki", "en_core_web_sm", "spacy", "thinc",
             "faster_whisper", "ctranslate2", "sounddevice", "soundfile", "av",
             "onnxruntime", "webview", "espeakng_loader", "phonemizer", "num2words",
             "language_tags", "pymupdf", "trafilatura", "justext"]
-datas, binaries, hidden = [("flow.ico", "."), ("flow.icns", ".")], [], []
+VERSION = os.environ.get("FLOW_VERSION", "0.0.0")
+os.makedirs("build", exist_ok=True)
+with open("build/version.txt", "w") as f:   # updater.current() reads it; a dev run has none
+    f.write(VERSION)
+datas, binaries, hidden = [("flow.ico", "."), ("flow.icns", "."), ("build/version.txt", ".")], [], []
 for pkg in PACKAGES:
     d, b, h = collect_all(pkg)
     datas += d; binaries += b; hidden += h
@@ -42,7 +46,7 @@ if sys.platform == "darwin":
     app = BUNDLE(coll, name="Flow Studio.app", icon="flow.icns",
                  # keep it stable: macOS ties the mic/Accessibility grants to it
                  bundle_identifier="io.github.arthurwie.flowstudio",
-                 version=os.environ.get("FLOW_VERSION", "0.0.0"),
+                 version=VERSION,
                  info_plist={
                      "NSMicrophoneUsageDescription":
                          "Flow Studio listens to your microphone while dictation is on, and turns your speech into text on this Mac.",

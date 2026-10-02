@@ -2,4 +2,4 @@
 # The one test command for this repo. Used by the pre-push hook, CI and workers.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-uvx --with trafilatura --with flask --with numpy --with soundfile --with faster-whisper==1.2.1 --with huggingface-hub==1.33.0 pytest -q test_model_manager.py test_offline_models.py test_ollama_setup.py test_url_text.py test_paths.py test_flow_settings.py test_flow_gestures.py test_compute_policy.py test_os_mac.py test_flow_capture.py test_flow_studio_mac.py
+uvx --with trafilatura --with flask --with numpy --with soundfile --with faster-whisper==1.2.1 --with huggingface-hub==1.33.0 --with cryptography pytest -q test_updater.py test_model_manager.py test_offline_models.py test_ollama_setup.py test_url_text.py test_paths.py test_flow_settings.py test_flow_gestures.py test_compute_policy.py test_os_mac.py test_flow_capture.py test_flow_studio_mac.py

@@ -48,12 +48,19 @@ Name: "{group}\Uninstall Flow Studio"; Filename: "{uninstallexe}"
 [Run]
 Filename: "{tmp}\MicrosoftEdgeWebview2Setup.exe"; Parameters: "/silent /install"; StatusMsg: "Installing Microsoft Edge WebView2 Runtime..."; Check: NeedsWebView2; Flags: waituntilterminated
 Filename: "{app}\FlowStudio.exe"; Description: "Launch Flow Studio"; Flags: nowait postinstall skipifsilent
+; The in-app updater installs with /VERYSILENT /RELAUNCH=1 and wants the new version started.
+Filename: "{app}\FlowStudio.exe"; Flags: nowait; Check: Relaunch
 
 [UninstallDelete]
 ; Models downloaded in-app share the bundled cache folder.
 Type: filesandordirs; Name: "{app}\models"
 
 [Code]
+function Relaunch: Boolean;
+begin
+  Result := ExpandConstant('{param:RELAUNCH|0}') = '1';
+end;
+
 // WebView2 Runtime detection, per Microsoft's distribution docs: a non-empty "pv" other
 // than 0.0.0.0 under the machine-wide or per-user EdgeUpdate client key.
 function HasWebView2(Root: Integer; Key: String): Boolean;

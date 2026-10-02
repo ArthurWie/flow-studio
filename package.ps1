@@ -14,6 +14,7 @@ Set-Location $root
 
 # 1. Freeze the app (onedir). No console unless -Debug.
 if ($Debug) { $env:FLOW_CONSOLE = "1" } else { Remove-Item Env:FLOW_CONSOLE -ErrorAction Ignore }
+$env:FLOW_VERSION = $Version   # FlowStudio.spec bakes it into version.txt for the updater
 & $py -m PyInstaller FlowStudio.spec --noconfirm --distpath dist --workpath build
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 

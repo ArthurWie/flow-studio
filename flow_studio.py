@@ -50,6 +50,7 @@ if getattr(sys, "frozen", False):
 
 import app as tts   # Kokoro TTS Studio  (Flask app on :7500)
 import flow         # Flow dictation      (Flask app on :7600)
+import updater
 
 TTS_PORT, FLOW_PORT = 7500, 7600
 OVERLAY_W, OVERLAY_H = 124, 44   # window; the pill inside shrink-wraps its content (rest transparent)
@@ -166,6 +167,13 @@ SHELL_HTML = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
   }});
 </script>
 </body></html>"""
+
+
+def _busy():
+    """Dictating, or TTS generating / with PDFs queued: the updater must not install now."""
+    return (flow.state.get("status") in ("recording", "transcribing", "cleaning")
+            or any(j["status"] == "running" for j in list(tts.jobs.values()))
+            or any(q["status"] in ("waiting", "running") for q in list(tts.queue_items.values())))
 
 
 def _hwnd_of(win):
@@ -420,6 +428,9 @@ def main():
         start_servers()
         if not wait_ready():
             _fatal("Flow Studio can't start — the local servers didn't respond in time.")
+        updater.busy = _busy
+        if flow.settings["auto_update"]:   # off: no network request at launch
+            threading.Thread(target=updater.check, daemon=True).start()
     try:
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("FlowStudio.App")

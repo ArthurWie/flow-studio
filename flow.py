@@ -30,6 +30,7 @@ import numpy as np
 
 from paths import data_dir
 import model_manager as mm
+import updater
 if sys.platform == "darwin":
     import os_mac as osi
 else:
@@ -68,6 +69,7 @@ settings = {
     "language": None,                       # None = auto-detect; or "en", "de", …
     "mic_index": None,                      # None = system default input device
     "overlay_style": "equalizer",           # equalizer | line | dots | orb
+    "auto_update": True,                    # check GitHub Releases for a new version at launch
 }
 
 
@@ -627,8 +629,21 @@ def api_state():
              cleanup_model=settings["cleanup_model"], hotkey=settings["hotkey"],
              language=settings["language"] or "auto",
              detected_lang=state.get("detected_lang", ""),
-             overlay_style=settings["overlay_style"])
+             overlay_style=settings["overlay_style"],
+             auto_update=settings["auto_update"], update=updater.ui_state())
     return jsonify(s)
+
+
+@app.route("/api/auto_update", methods=["POST"])
+def api_auto_update():
+    settings["auto_update"] = bool((request.get_json(silent=True) or {}).get("on"))
+    save_settings()
+    return jsonify(ok=True, auto_update=settings["auto_update"])
+
+
+@app.route("/api/update/install", methods=["POST"])
+def api_update_install():
+    return jsonify(ok=updater.install())
 
 
 @app.route("/api/level")
@@ -944,6 +959,7 @@ PAGE_HTML = r"""<!DOCTYPE html>
   <!-- Main -->
   <div style="padding:26px 40px 0;">
     <div style="max-width:1060px; margin:0 auto;">
+      <div id="updateBar" style="display:none; align-items:center; gap:12px; margin-bottom:18px; padding:11px 16px; background:#FAF0DC; border:1px solid #F0E1C2; border-radius:11px; font-size:13.5px; color:#5C4413;"></div>
       <div style="margin-bottom:22px;">
         <h1 class="serif" style="font-size:33px; font-weight:600; letter-spacing:-0.015em; margin:0 0 5px;">Welcome back, Arthur</h1>
         <div style="font-size:14.5px; color:#8A8378;">Everything runs on this PC — nothing leaves your machine.</div>
@@ -1256,8 +1272,10 @@ async function renderGeneral(body){
     srow('Shortcut','Press to start, press again to stop', `<span class="kbd">${(s.hotkey||'alt+space').replace(/\+/g,' + ')}</span><button class="btnchg" id="hkChange">Change</button>`) +
     srow('Microphone','Input device used for dictation', `<select class="sel" id="micSel">${micOpts}</select>`) +
     srow('Dictation language','Force a language, or auto-detect per clip', `<select class="sel" id="langSel"><option value="auto">Auto-detect</option><option value="en">English</option><option value="de">German (Deutsch)</option></select>`) +
-    srow('App language','Interface language (English only in this build)', `<select class="sel" disabled><option>English</option></select>`)
+    srow('App language','Interface language (English only in this build)', `<select class="sel" disabled><option>English</option></select>`) +
+    srow('Check for updates','At launch, ask GitHub Releases for a newer version (installs only when you say so)', toggle('autoUpd', s.auto_update!==false))
   );
+  body.querySelector('[data-tg="autoUpd"]').onclick = async () => { await post('/api/auto_update',{on: s.auto_update===false}); await tick(); renderPanel(); };
   $("langSel").value = lang;
   $("langSel").onchange = async e => { await post('/api/language',{value:e.target.value}); tick(); };
   $("micSel").value = micRes.current==null ? '' : String(micRes.current);
@@ -1375,6 +1393,19 @@ function renderHistory(h){
   box.querySelectorAll('[data-ci]').forEach(b => b.onclick = function(){ copyText(window._histTexts[+this.dataset.ci], this); });
 }
 
+// "Update available → Install", then byte progress; it installs once dictation and speech are idle.
+function renderUpdate(u){
+  const bar = $("updateBar");
+  const btn = label => ` <button class="btnchg" onclick="post('/api/update/install').then(tick)">${label}</button>`;
+  const html = u.state==='available' ? `Flow Studio ${esc(u.version)} is available.${btn('Install')}`
+    : u.state==='downloading' ? `Downloading Flow Studio ${esc(u.version)}… <span class="mono">${fmtB(u.done)} / ${fmtB(u.total)}</span>`
+    : u.state==='ready' ? `Flow Studio ${esc(u.version)} installs as soon as dictation and speech are idle.`
+    : u.state==='installing' ? `Installing Flow Studio ${esc(u.version)}… it restarts by itself.`
+    : u.state==='error' ? `Update failed: ${esc(u.error)}. This version keeps working.${btn('Retry')}` : '';
+  bar.style.display = html ? 'flex' : 'none';
+  bar.innerHTML = html;
+}
+
 let lastStatus=null;
 async function tick(){
   let s; try { s = await (await fetch('/api/state')).json(); } catch(e){ return; }
@@ -1396,6 +1427,7 @@ async function tick(){
        + `<br><a href="#" onclick="post('/api/ollama_setup');return false;" style="color:#E8912D;">set up cleanup</a>`
      : `<span style="color:#2E7D43;">●</span> ${s.cleanup_model}`;
   renderHistory(s.history||[]);
+  renderUpdate(s.update||{});
 
   if (s.status==='recording'){
     show('rec'); $("recStatus").textContent='RECORDING';
